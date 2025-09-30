@@ -1,0 +1,29 @@
+# This file specifies files that are *not* uploaded to Google Cloud Platform
+# using gcloud.
+
+.gcloudignore
+.git
+.gitignore
+
+# Node.js dependencies
+node_modules/
+
+# Puppeteer Chrome installations
+.cache/
+.local-chromium/
+chrome-linux/
+.puppeteer_cache/
+
+# TypeScript source files (we only need compiled JS)
+src/
+
+# Development files
+*.ts
+!*.d.ts
+tsconfig.json
+.eslintrc.js
+
+# Tests
+__tests__/
+*.test.js
+*.spec.js

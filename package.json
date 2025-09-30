@@ -1,0 +1,17 @@
+{
+  "name": "community-data-scraper-service",
+  "version": "1.0.0",
+  "description": "Backend service for scraping community data from HTML sources",
+  "main": "index.js",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions,firestore,hosting",
+    "shell": "firebase functions:shell",
+    "deploy": "firebase deploy",
+    "logs": "firebase functions:log"
+  },
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": "20"
+  }
+}
