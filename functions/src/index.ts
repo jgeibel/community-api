@@ -16,6 +16,7 @@ export const syncCommunityEvents = functions
   .runWith({
     timeoutSeconds: 540,
     memory: '512MB',
+    secrets: ['OPENAI_API_KEY', 'GOOGLE_CALENDAR_API_KEY'],
   })
   .pubsub
   .schedule('*/30 * * * *')
@@ -39,6 +40,7 @@ export const triggerCommunityEventsSync = functions
   .runWith({
     timeoutSeconds: 540,
     memory: '512MB',
+    secrets: ['OPENAI_API_KEY', 'GOOGLE_CALENDAR_API_KEY'],
   })
   .https.onRequest(async (req: Request, res: Response) => {
     const calendarId = (req.query.calendarId as string | undefined) ?? undefined;
@@ -129,6 +131,7 @@ export const triggerCommunityEventsSyncForDay = functions
   .runWith({
     timeoutSeconds: 300,
     memory: '512MB',
+    secrets: ['OPENAI_API_KEY', 'GOOGLE_CALENDAR_API_KEY'],
   })
   .https.onRequest(async (req: Request, res: Response) => {
     const dateParam = (req.query.date as string | undefined)?.trim();

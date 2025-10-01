@@ -1,7 +1,7 @@
 {
-  "name": "community-data-scraper-service",
+  "name": "community-api",
   "version": "1.0.0",
-  "description": "Backend service for scraping community data from HTML sources",
+  "description": "Firebase-based API for community events with LLM classification and personalized ranking",
   "main": "index.js",
   "scripts": {
     "serve": "firebase emulators:start --only functions,firestore,hosting",

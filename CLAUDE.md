@@ -41,13 +41,13 @@ firebase deploy --only hosting
 npm run logs
 
 # Manually trigger event sync (all calendars)
-curl "https://us-central1-community-data-scraper-service.cloudfunctions.net/triggerCommunityEventsSync"
+curl "https://us-central1-community-api-ba17c.cloudfunctions.net/triggerCommunityEventsSync"
 
 # Manually trigger sync for a specific date
-curl "https://us-central1-community-data-scraper-service.cloudfunctions.net/triggerCommunityEventsSyncForDay?date=2025-09-29"
+curl "https://us-central1-community-api-ba17c.cloudfunctions.net/triggerCommunityEventsSyncForDay?date=2025-09-29"
 
 # Manually trigger sync with custom parameters
-curl "https://us-central1-community-data-scraper-service.cloudfunctions.net/triggerCommunityEventsSync?start=2025-09-29&days=7&chunkSize=2&forceRefresh=true"
+curl "https://us-central1-community-api-ba17c.cloudfunctions.net/triggerCommunityEventsSync?start=2025-09-29&days=7&chunkSize=2&forceRefresh=true"
 
 # Clear and rescrape all data
 ./scripts/clear-and-rescrape.sh
@@ -57,19 +57,19 @@ curl "https://us-central1-community-data-scraper-service.cloudfunctions.net/trig
 ```bash
 # Get events feed (requires API key)
 curl -H "X-API-Key: 05413fbc45028b7295bbc6cffbdc506829b3c3457039c06dbc2ff6f54ea79348" \
-  "https://us-central1-community-data-scraper-service.cloudfunctions.net/api/feed?start=2025-09-29&days=7"
+  "https://us-central1-community-api-ba17c.cloudfunctions.net/api/feed?start=2025-09-29&days=7"
 
 # Get feed with tag filtering
 curl -H "X-API-Key: 05413fbc45028b7295bbc6cffbdc506829b3c3457039c06dbc2ff6f54ea79348" \
-  "https://us-central1-community-data-scraper-service.cloudfunctions.net/api/feed?tags=yoga,fitness"
+  "https://us-central1-community-api-ba17c.cloudfunctions.net/api/feed?tags=yoga,fitness"
 
 # Get feed with user personalization
 curl -H "X-API-Key: 05413fbc45028b7295bbc6cffbdc506829b3c3457039c06dbc2ff6f54ea79348" \
-  "https://us-central1-community-data-scraper-service.cloudfunctions.net/api/feed?userId=user123"
+  "https://us-central1-community-api-ba17c.cloudfunctions.net/api/feed?userId=user123"
 
 # Get tag proposals
 curl -H "X-API-Key: 05413fbc45028b7295bbc6cffbdc506829b3c3457039c06dbc2ff6f54ea79348" \
-  "https://us-central1-community-data-scraper-service.cloudfunctions.net/api/tag-proposals?limit=50"
+  "https://us-central1-community-api-ba17c.cloudfunctions.net/api/tag-proposals?limit=50"
 ```
 
 ## Architecture
@@ -189,7 +189,7 @@ When bad tags are generated (e.g., "permission", "recommended" instead of actual
    npm run serve
 
    # In another terminal, trigger sync for a specific date
-   curl "http://localhost:5001/community-data-scraper-service/us-central1/triggerCommunityEventsSyncForDay?date=2025-09-29&forceRefresh=true"
+   curl "http://localhost:5001/community-api-ba17c/us-central1/triggerCommunityEventsSyncForDay?date=2025-09-29&forceRefresh=true"
    ```
 
 3. **Review logs** for `[CLASSIFICATION_DEBUG]` entries containing:

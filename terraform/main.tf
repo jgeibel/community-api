@@ -14,7 +14,7 @@ provider "google" {
 
 variable "project_id" {
   description = "GCP Project ID"
-  default     = "community-data-scraper-service"
+  default     = "community-api-ba17c"
 }
 
 variable "region" {

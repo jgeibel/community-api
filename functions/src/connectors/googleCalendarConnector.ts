@@ -190,7 +190,7 @@ export class GoogleCalendarConnector implements SourceConnector<GoogleCalendarRa
       try {
         const response = await fetch(url, {
           headers: {
-            'User-Agent': 'CommunityDataScraper/1.0 (+https://github.com/jgeibel/community-data-scraper-service)',
+            'User-Agent': 'CommunityAPI/1.0 (+https://github.com/jgeibel/community-api)',
             Accept: 'application/json',
           },
         });

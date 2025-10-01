@@ -1,7 +1,7 @@
 const https = require('https');
 
 const API_KEY = '05413fbc45028b7295bbc6cffbdc506829b3c3457039c06dbc2ff6f54ea79348';
-const API_BASE = 'https://us-central1-community-data-scraper-service.cloudfunctions.net/api/api';
+const API_BASE = 'https://us-central1-community-api-ba17c.cloudfunctions.net/api/api';
 
 // Sample events with tags from the feed
 const EVENTS = [
@@ -99,7 +99,7 @@ function postBatch(interactions) {
     const data = JSON.stringify({ interactions });
 
     const options = {
-      hostname: 'us-central1-community-data-scraper-service.cloudfunctions.net',
+      hostname: 'us-central1-community-api-ba17c.cloudfunctions.net',
       port: 443,
       path: '/api/api/interactions/batch',
       method: 'POST',

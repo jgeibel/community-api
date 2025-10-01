@@ -15,15 +15,15 @@ This API powers a **TikTok-style community feed** that learns user preferences t
 ## Base URL
 
 ```
-Production: https://us-central1-community-data-scraper-service.cloudfunctions.net/api
-Mock Data:  https://us-central1-community-data-scraper-service.cloudfunctions.net/api/mock
+Production: https://us-central1-community-api-ba17c.cloudfunctions.net/api
+Mock Data:  https://us-central1-community-api-ba17c.cloudfunctions.net/api/mock
 ```
 
 **Front-end switching pattern:**
 ```typescript
 const API_BASE = import.meta.env.VITE_USE_MOCK
-  ? 'https://us-central1-community-data-scraper-service.cloudfunctions.net/api/mock'
-  : 'https://us-central1-community-data-scraper-service.cloudfunctions.net/api';
+  ? 'https://us-central1-community-api-ba17c.cloudfunctions.net/api/mock'
+  : 'https://us-central1-community-api-ba17c.cloudfunctions.net/api';
 ```
 
 ---
@@ -708,7 +708,7 @@ const fetchWithRetry = async (url: string, options: RequestInit, retries = 3) =>
 ```typescript
 import React, { useState, useEffect, useRef } from 'react';
 
-const API_BASE = 'https://us-central1-community-data-scraper-service.cloudfunctions.net/api';
+const API_BASE = 'https://us-central1-community-api-ba17c.cloudfunctions.net/api';
 const API_KEY = 'your-api-key-here';
 
 interface FeedScreenProps {
