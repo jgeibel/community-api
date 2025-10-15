@@ -9,6 +9,7 @@ import mockRoutes from './mock/routes';
 import { rankContent, applyExplorationMix, ContentItem } from '../services/feedRankingService';
 import { hasEnoughDataForPersonalization } from '../services/userProfileService';
 import { ContentType } from '../models/interaction';
+import userRoutes from './users';
 
 const app = express();
 const tagProposalRepository = new TagProposalRepository();
@@ -23,6 +24,7 @@ app.use(validateApiKey);
 
 // Mount interaction routes
 app.use('/interactions', interactionRoutes);
+app.use('/users', userRoutes);
 
 if (!admin.apps.length) {
   admin.initializeApp();

@@ -28,6 +28,7 @@ export interface Interaction {
   timestamp: string; // ISO string
   context: InteractionContext;
   contentTags: string[]; // Denormalized for fast lookup
+  metadata?: Record<string, unknown>;
 }
 
 export interface CreateInteractionInput {
@@ -38,6 +39,7 @@ export interface CreateInteractionInput {
   dwellTime?: number;
   context: InteractionContext;
   contentTags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 // Action weights for computing affinity scores

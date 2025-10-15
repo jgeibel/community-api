@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import { firestore } from '../firebase/admin';
 import { CreateInteractionInput, InteractionAction, ContentType } from '../models/interaction';
 import { FieldValue } from 'firebase-admin/firestore';
+import { applyPinToggle } from '../services/pinnedEventsService';
 
 const router = Router();
 const db = firestore;
@@ -33,7 +34,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (!input.contentId || typeof input.userId !== 'string') {
+    if (!input.contentId || typeof input.contentId !== 'string') {
       res.status(400).json({ error: 'contentId is required and must be a string' });
       return;
     }
@@ -86,6 +87,13 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    if (input.metadata !== undefined) {
+      if (typeof input.metadata !== 'object' || input.metadata === null || Array.isArray(input.metadata)) {
+        res.status(400).json({ error: 'metadata must be an object when provided' });
+        return;
+      }
+    }
+
     // Fetch content tags if not provided
     let contentTags = input.contentTags || [];
     if (contentTags.length === 0) {
@@ -115,10 +123,18 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       interaction.dwellTime = input.dwellTime;
     }
 
+    if (input.metadata !== undefined) {
+      interaction.metadata = input.metadata;
+    }
+
     const docRef = await db.collection('interactions').add({
       ...interaction,
       createdAt: FieldValue.serverTimestamp(),
     });
+
+    if (input.contentType === 'event' && input.action === 'bookmarked') {
+      await applyPinToggle(input.userId, input.contentId, input.metadata);
+    }
 
     res.status(201).json({
       success: true,
@@ -153,6 +169,7 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
 
     const batch = db.batch();
     const interactionIds: string[] = [];
+    const pinUpdates: Array<{ userId: string; contentId: string; metadata?: Record<string, unknown> }> = [];
 
     for (const input of interactions) {
       // Basic validation (skip detailed validation for performance)
@@ -178,13 +195,32 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
         interaction.dwellTime = input.dwellTime;
       }
 
+      if (input.metadata !== undefined) {
+        interaction.metadata = input.metadata;
+      }
+
       batch.set(docRef, {
         ...interaction,
         createdAt: FieldValue.serverTimestamp(),
       });
+
+      if (input.contentType === 'event' && input.action === 'bookmarked') {
+        pinUpdates.push({
+          userId: input.userId,
+          contentId: input.contentId,
+          metadata: input.metadata,
+        });
+      }
     }
 
     await batch.commit();
+    if (pinUpdates.length > 0) {
+      await Promise.all(pinUpdates.map(update => applyPinToggle(
+        update.userId,
+        update.contentId,
+        update.metadata,
+      )));
+    }
 
     res.status(201).json({
       success: true,

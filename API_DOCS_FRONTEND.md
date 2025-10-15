@@ -224,6 +224,10 @@ interface CreateInteractionInput {
   dwellTime?: number;               // Seconds spent viewing (optional)
   context: InteractionContext;      // Session context
   contentTags?: string[];           // Tags (auto-fetched if omitted)
+  metadata?: {                      // Extra attributes (bookmarks use `active`)
+    active?: boolean;
+    [key: string]: unknown;
+  };
 }
 
 type InteractionAction =
@@ -243,6 +247,13 @@ interface InteractionContext {
   timeOfDay: 'morning' | 'afternoon' | 'evening' | 'night';
   dayOfWeek: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
 }
+
+#### Bookmark metadata for pinned events
+
+- Pinned events are recorded by sending `action: 'bookmarked'` with `contentType: 'event'`.
+- Include `metadata: { active: true }` when the user pins an event.
+- Send `metadata: { active: false }` when the user unpins; omitting `metadata.active` defaults to `true`.
+- The API stores bookmarks for personalization exactly as before and now keeps a durable pinned list for retrieval.
 ```
 
 #### Request Example
@@ -287,6 +298,28 @@ await fetch(`${API_BASE}/api/interactions`, {
       sessionId: 'session-12345',
       timeOfDay: 'evening',
       dayOfWeek: 'monday',
+    },
+  }),
+});
+
+// Pin an event (metadata.active defaults to true if omitted)
+await fetch(`${API_BASE}/api/interactions`, {
+  method: 'POST',
+  headers: {
+    'X-API-Key': API_KEY,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    userId: 'user-abc-123',
+    contentId: 'event-xyz-789',
+    contentType: 'event',
+    action: 'bookmarked',
+    metadata: { active: true }, // Send { active: false } to unpin
+    context: {
+      position: 2,
+      sessionId: 'session-67890',
+      timeOfDay: 'morning',
+      dayOfWeek: 'tuesday',
     },
   }),
 });
@@ -357,6 +390,122 @@ await fetch(`${API_BASE}/api/interactions/batch`, {
   interactionIds: string[];       // IDs of created interactions
 }
 ```
+
+---
+
+### 4. GET `/api/users/{userId}/pinned-events` - Fetch pinned events (with metadata)
+
+Returns the canonical pinned events for a user, filtered by date range and paginated. The API denormalizes key event fields so the client can render without additional lookups.
+
+#### Query parameters
+
+- `mode=today` – shortcut for `[startOfToday, startOfTomorrow)` in `America/Los_Angeles`.
+- `start`, `end` – ISO timestamps defining an exclusive window. If omitted, defaults to now through the next 30 days. `end` must be greater than `start`.
+- `pageSize` – number of events to return (default 10, max 30).
+- `pageToken` – opaque cursor returned by a previous page.
+
+#### Response
+
+```json
+{
+  "events": [
+    {
+      "eventId": "event-123",
+      "title": "Morning Yoga",
+      "startTime": "2024-10-12T17:00:00.000Z",
+      "endTime": "2024-10-12T18:00:00.000Z",
+      "location": "Community Center",
+      "tags": ["fitness", "wellness"],
+      "contentType": "event",
+      "source": "calendar",
+      "pinnedAt": "2024-10-10T22:15:03.000Z"
+    }
+  ],
+  "nextPageToken": null,
+  "window": {
+    "start": "2024-10-12T07:00:00.000Z",
+    "end": "2024-10-13T07:00:00.000Z"
+  },
+  "updatedAt": "2024-10-10T22:15:03.000Z"
+}
+```
+
+**Headers**
+
+- `X-API-Key`: Required (same as other secured endpoints)
+- `X-User-Id`: Recommended; if present it must match `{userId}` and helps guard cross-user access.
+
+#### cURL Examples
+
+```bash
+# Pinned events happening today (Pacific time)
+curl "https://us-central1-community-api-ba17c.cloudfunctions.net/api/users/user-123/pinned-events?mode=today" \
+  -H "X-API-Key: $API_KEY" \
+  -H "X-User-Id: user-123"
+
+# Paginated list across a custom window
+curl "https://us-central1-community-api-ba17c.cloudfunctions.net/api/users/user-123/pinned-events?start=2024-10-01T00:00:00.000Z&end=2024-10-31T00:00:00.000Z&pageSize=10" \
+  -H "X-API-Key: $API_KEY" \
+  -H "X-User-Id: user-123"
+```
+
+---
+
+### 5. POST `/api/users/{userId}/pinned-events` - Toggle a pinned event
+
+Explicitly pin or unpin an event. Useful for tooling/tests; the mobile app prefers the interactions endpoint.
+
+#### Request Body
+
+```typescript
+interface UpdatePinnedEventInput {
+  eventId: string;
+  pinned?: boolean; // Defaults to true (pin). Set to false to unpin.
+}
+```
+
+#### Response
+
+```json
+{
+  "pinned": true,
+  "event": {
+    "eventId": "event-123",
+    "title": "Morning Yoga",
+    "startTime": "2024-10-12T17:00:00.000Z",
+    "endTime": "2024-10-12T18:00:00.000Z",
+    "location": "Community Center",
+    "tags": ["fitness", "wellness"],
+    "contentType": "event",
+    "source": "calendar",
+    "pinnedAt": "2024-10-10T22:15:03.000Z"
+  }
+}
+```
+
+If `pinned` is set to `false`, the response includes `"event": null`.
+
+#### cURL Examples
+
+```bash
+# Pin an event
+curl -X POST "https://us-central1-community-api-ba17c.cloudfunctions.net/api/users/user-123/pinned-events" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "X-User-Id: user-123" \
+  -d '{"eventId":"event-456","pinned":true}'
+
+# Unpin the same event
+curl -X POST "https://us-central1-community-api-ba17c.cloudfunctions.net/api/users/user-123/pinned-events" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "X-User-Id: user-123" \
+  -d '{"eventId":"event-456","pinned":false}'
+```
+
+Run `FIRESTORE_EMULATOR_HOST=localhost:8080 npm run test` inside `functions/` to execute the automated coverage for pin/unpin flows.
+
+Run `FIRESTORE_EMULATOR_HOST=localhost:8080 npm run test` inside `functions/` to execute the automated coverage for pin/unpin flows.
 
 ---
 
