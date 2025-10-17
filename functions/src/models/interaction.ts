@@ -1,4 +1,4 @@
-export type ContentType = 'event' | 'flash-offer' | 'poll' | 'request' | 'photo' | 'announcement';
+export type ContentType = 'event' | 'event-series' | 'flash-offer' | 'poll' | 'request' | 'photo' | 'announcement';
 
 export type InteractionAction =
   | 'viewed'

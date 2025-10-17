@@ -41,6 +41,7 @@ export interface CanonicalEvent {
   title: string;
   description?: string;
   contentType?: 'event' | 'flash-offer' | 'poll' | 'request' | 'photo' | 'announcement';
+  seriesId?: string | null;
   startTime: string;
   endTime?: string;
   timeZone?: string;

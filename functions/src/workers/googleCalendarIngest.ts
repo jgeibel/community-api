@@ -8,6 +8,8 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import { TagProposalService, shouldKeepGeneratedSlug } from '../tags/proposalService';
 import { Timestamp } from 'firebase-admin/firestore';
 import type { ClassificationCandidate, ClassificationResult } from '../classification/types';
+import { EventSeriesStore } from '../services/eventSeriesStore';
+import { buildStableId, createSlug } from '../utils/slug';
 
 export interface GoogleCalendarIngestConfig {
   calendarId: string;
@@ -49,6 +51,7 @@ type PreparedEvent = {
 export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): Promise<IngestStats> {
   const connector = new GoogleCalendarConnector({ calendarId: config.calendarId, label: config.label });
   const store = new EventStore();
+  const seriesStore = new EventSeriesStore();
   const embeddingProvider = new OpenAIEmbeddingProvider();
   const classifier = new EventTagClassifier({ embeddings: embeddingProvider });
   const forceRefresh = Boolean(config.forceRefresh);
@@ -220,6 +223,20 @@ export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): 
 
       applyClassification(normalized, classification, { additionalTags: proposalSlugs });
 
+      try {
+        const hostContext = deriveHostContext(normalized, payload);
+        const { seriesId } = await seriesStore.attachEvent(normalized, {
+          hostId: hostContext.hostIdSeed,
+          hostName: hostContext.hostName,
+          organizer: hostContext.organizer,
+          sourceId: payload.sourceId,
+          rawPayload: payload,
+        });
+        normalized.seriesId = seriesId;
+      } catch (seriesError) {
+        console.error(`Failed to attach event ${normalized.id} to series`, seriesError);
+      }
+
       const result = await store.saveEvent(normalized, payload.raw, existingSnapshot);
       if (result === 'created') {
         created += 1;
@@ -322,4 +339,50 @@ function buildEnrichedText(title: string, description: string | undefined, tags:
   }
 
   return parts.join('\n').trim();
+}
+
+type HostContext = {
+  hostIdSeed: string;
+  hostName: string | null;
+  organizer: string | null;
+};
+
+function deriveHostContext(
+  event: CanonicalEvent,
+  payload: RawEventPayload<GoogleCalendarRawEvent>,
+): HostContext {
+  const organizerFromEvent = sanitizeName(event.organizer);
+  const organizerFromPayload = sanitizeName(
+    payload.raw.raw.organizer?.displayName ?? payload.raw.raw.organizer?.email,
+  );
+
+  const organizer = organizerFromEvent ?? organizerFromPayload;
+
+  const calendarId = sanitizeName(payload.raw.calendarId);
+  const fallbackSource = organizer ?? calendarId ?? payload.sourceId;
+
+  const hostIdSeed = buildStableId(
+    [
+      organizer,
+      calendarId,
+      payload.sourceId,
+    ],
+    createSlug(fallbackSource || 'host'),
+  ) || createSlug(payload.sourceId) || 'host';
+
+  const hostName = organizer ?? calendarId ?? fallbackSource ?? null;
+
+  return {
+    hostIdSeed,
+    hostName,
+    organizer,
+  };
+}
+
+function sanitizeName(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }

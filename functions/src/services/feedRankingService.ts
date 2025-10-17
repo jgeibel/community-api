@@ -14,6 +14,7 @@ export interface ContentItem {
     shares?: number;
     bookmarks?: number;
   };
+  metadata?: Record<string, unknown>;
 }
 
 export interface RankedContentItem extends ContentItem {

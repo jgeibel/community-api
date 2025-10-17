@@ -38,6 +38,7 @@ export class EventStore {
     const data = {
       title: event.title,
       description: event.description ?? null,
+      seriesId: event.seriesId ?? null,
       startTime: Timestamp.fromDate(new Date(event.startTime)),
       endTime: event.endTime ? Timestamp.fromDate(new Date(event.endTime)) : null,
       timeZone: event.timeZone ?? null,

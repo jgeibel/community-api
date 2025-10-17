@@ -1,9 +1,11 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { firestore } from '../firebase/admin';
 import { addUtcDays, startOfDayInTimeZone } from '../utils/timezone';
+import type { ContentType } from '../models/interaction';
 
 const PINNED_EVENTS_COLLECTION = 'userPinnedEvents';
 const ENTRIES_SUBCOLLECTION = 'entries';
+const SERIES_SUBCOLLECTION = 'series';
 const DEFAULT_TIME_ZONE = 'America/Los_Angeles';
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 30;
@@ -12,6 +14,9 @@ const db = firestore;
 
 export interface PinnedEventEntry {
   eventId: string;
+  seriesId?: string | null;
+  seriesTitle?: string | null;
+  hostName?: string | null;
   title: string | null;
   startTime: string | null;
   endTime: string | null;
@@ -19,6 +24,15 @@ export interface PinnedEventEntry {
   tags: string[];
   contentType: string | null;
   source?: string | null;
+  pinnedAt: string | null;
+  derived?: boolean;
+}
+
+export interface PinnedSeriesRecord {
+  seriesId: string;
+  title: string | null;
+  hostName: string | null;
+  tags: string[];
   pinnedAt: string | null;
 }
 
@@ -40,35 +54,34 @@ export interface PinnedEventsQueryResult {
   updatedAt: string | null;
 }
 
-interface PageTokenPayload {
-  eventStartTime: string;
-  eventId: string;
-}
-
 function isMockUser(userId: string): boolean {
   return userId.startsWith('mock-');
 }
 
-function parsePageToken(token?: string): PageTokenPayload | null {
+function parsePageToken(token?: string): number {
   if (!token) {
-    return null;
+    return 0;
   }
 
   try {
-    const json = Buffer.from(token, 'base64').toString('utf8');
-    const payload = JSON.parse(json) as PageTokenPayload;
-    if (typeof payload.eventStartTime !== 'string' || typeof payload.eventId !== 'string') {
-      return null;
+    const decoded = Buffer.from(token, 'base64').toString('utf8');
+    if (decoded.trim().startsWith('{')) {
+      // Legacy payload format – reset to first page.
+      return 0;
     }
-    return payload;
+    const offset = Number.parseInt(decoded, 10);
+    if (Number.isNaN(offset) || offset < 0) {
+      throw new Error('Invalid offset');
+    }
+    return offset;
   } catch (error) {
     console.warn('Failed to parse pinned events page token', error);
-    return null;
+    throw new Error('Invalid page token');
   }
 }
 
-function encodePageToken(payload: PageTokenPayload): string {
-  return Buffer.from(JSON.stringify(payload)).toString('base64');
+function encodePageToken(offset: number): string {
+  return Buffer.from(String(offset)).toString('base64');
 }
 
 function extractTimestamp(value: unknown): Timestamp | null {
@@ -123,7 +136,6 @@ function buildWindow(options: PinnedEventsQueryOptions): { start: Date; end: Dat
     return { start: startInput, end: endInput };
   }
 
-  // Default: from now through next 30 days
   const start = new Date();
   const end = addUtcDays(start, 30);
   return { start, end };
@@ -136,18 +148,41 @@ function sanitizeTags(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+function sanitizeString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function mapPinnedEvent(doc: FirebaseFirestore.DocumentSnapshot): PinnedEventEntry {
   const data = doc.data() ?? {};
 
   return {
-    eventId: data.eventId ?? doc.id,
-    title: typeof data.title === 'string' ? data.title : null,
+    eventId: typeof data.eventId === 'string' ? data.eventId : doc.id,
+    seriesId: sanitizeString(data.seriesId),
+    seriesTitle: sanitizeString(data.seriesTitle),
+    hostName: sanitizeString(data.hostName),
+    title: sanitizeString(data.title),
     startTime: timestampToIso(extractTimestamp(data.eventStartTime)),
     endTime: timestampToIso(extractTimestamp(data.eventEndTime)),
-    location: typeof data.location === 'string' ? data.location : null,
+    location: sanitizeString(data.location),
     tags: sanitizeTags(data.tags),
-    contentType: typeof data.contentType === 'string' ? data.contentType : null,
-    source: typeof data.source === 'string' ? data.source : null,
+    contentType: sanitizeString(data.contentType),
+    source: sanitizeString(data.source),
+    pinnedAt: timestampToIso(extractTimestamp(data.pinnedAt)),
+    derived: false,
+  };
+}
+
+function mapPinnedSeriesDoc(doc: FirebaseFirestore.DocumentSnapshot): PinnedSeriesRecord {
+  const data = doc.data() ?? {};
+  return {
+    seriesId: doc.id,
+    title: sanitizeString(data.title),
+    hostName: sanitizeString(data.hostName),
+    tags: sanitizeTags(data.tags),
     pinnedAt: timestampToIso(extractTimestamp(data.pinnedAt)),
   };
 }
@@ -160,6 +195,9 @@ async function fetchEventMetadata(eventId: string): Promise<{
   endTime: Timestamp | null;
   contentType: string | null;
   source: string | null;
+  seriesId: string | null;
+  seriesTitle: string | null;
+  hostName: string | null;
 }> {
   const eventDoc = await db.collection('events').doc(eventId).get();
   if (!eventDoc.exists) {
@@ -173,16 +211,174 @@ async function fetchEventMetadata(eventId: string): Promise<{
   }
 
   const endTs = extractTimestamp(data.endTime);
+  const seriesId = typeof data.seriesId === 'string' ? data.seriesId : null;
+  const sourceId = sanitizeString(data.source?.sourceId);
+
+  let seriesTitle: string | null = null;
+  let hostName: string | null = null;
+
+  if (seriesId) {
+    try {
+      const seriesDoc = await db.collection('eventSeries').doc(seriesId).get();
+      if (seriesDoc.exists) {
+        const seriesData = seriesDoc.data() ?? {};
+        seriesTitle = sanitizeString(seriesData.title);
+        hostName = sanitizeString(seriesData.host?.name);
+      }
+    } catch (error) {
+      console.warn(`Failed to fetch series metadata for ${seriesId}`, error);
+    }
+  }
 
   return {
-    title: typeof data.title === 'string' ? data.title : null,
-    location: typeof data.location === 'string' ? data.location : null,
+    title: sanitizeString(data.title),
+    location: sanitizeString(data.location),
     tags: sanitizeTags(data.tags),
     startTime: startTs,
     endTime: endTs,
-    contentType: typeof data.contentType === 'string' ? data.contentType : null,
-    source: typeof data.source === 'string' ? data.source : null,
+    contentType: sanitizeString(data.contentType),
+    source: sourceId,
+    seriesId,
+    seriesTitle,
+    hostName,
   };
+}
+
+async function fetchSeriesSummary(seriesId: string): Promise<{
+  title: string | null;
+  hostName: string | null;
+  tags: string[];
+  sourceId: string | null;
+}> {
+  const doc = await db.collection('eventSeries').doc(seriesId).get();
+  if (!doc.exists) {
+    throw new Error(`Series ${seriesId} not found`);
+  }
+
+  const data = doc.data() ?? {};
+  const source = data.source ?? {};
+
+  return {
+    title: sanitizeString(data.title),
+    hostName: sanitizeString(data.host?.name),
+    tags: sanitizeTags(data.tags),
+    sourceId: sanitizeString(source.sourceId),
+  };
+}
+
+function clampPageSize(pageSize?: number): number {
+  if (!pageSize || Number.isNaN(pageSize)) {
+    return DEFAULT_PAGE_SIZE;
+  }
+  return Math.min(Math.max(Math.floor(pageSize), 1), MAX_PAGE_SIZE);
+}
+
+function toMillis(value: string | null | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function compareEntries(a: PinnedEventEntry, b: PinnedEventEntry): number {
+  const aStart = toMillis(a.startTime, Number.MAX_SAFE_INTEGER);
+  const bStart = toMillis(b.startTime, Number.MAX_SAFE_INTEGER);
+  if (aStart !== bStart) {
+    return aStart - bStart;
+  }
+
+  const aPinned = toMillis(a.pinnedAt, 0);
+  const bPinned = toMillis(b.pinnedAt, 0);
+  if (aPinned !== bPinned) {
+    return bPinned - aPinned;
+  }
+
+  return a.eventId.localeCompare(b.eventId);
+}
+
+async function expandSeriesEntries(
+  seriesIds: string[],
+  summaries: Map<string, PinnedSeriesRecord>,
+  windowStart: Date,
+  windowEnd: Date,
+  existingEventIds: Set<string>,
+): Promise<PinnedEventEntry[]> {
+  if (seriesIds.length === 0) {
+    return [];
+  }
+
+  const refs = seriesIds.map(id => db.collection('eventSeries').doc(id));
+  const snapshots = await db.getAll(...refs);
+
+  const startMs = windowStart.getTime();
+  const endMs = windowEnd.getTime();
+  const results: PinnedEventEntry[] = [];
+
+  for (const snapshot of snapshots) {
+    if (!snapshot.exists) {
+      continue;
+    }
+
+    const data = snapshot.data() ?? {};
+    const summary = summaries.get(snapshot.id);
+    const occurrences = Array.isArray(data.upcomingOccurrences) ? data.upcomingOccurrences : [];
+    const seriesTitle = sanitizeString(data.title) ?? summary?.title ?? null;
+    const hostName = sanitizeString(data.host?.name) ?? summary?.hostName ?? null;
+    const sourceId = sanitizeString(data.source?.sourceId);
+
+    for (const occurrence of occurrences) {
+      if (!occurrence?.eventId) {
+        continue;
+      }
+      if (existingEventIds.has(occurrence.eventId)) {
+        continue;
+      }
+
+      const startTs = extractTimestamp((occurrence as { startTime?: unknown }).startTime ?? null);
+      if (!startTs) {
+        continue;
+      }
+      const startMillis = startTs.toMillis();
+      if (startMillis < startMs || startMillis >= endMs) {
+        continue;
+      }
+
+      const endTs = extractTimestamp((occurrence as { endTime?: unknown }).endTime ?? null);
+
+      let occurrenceTags: string[] = [];
+      if (Array.isArray((occurrence as { tags?: unknown }).tags)) {
+        occurrenceTags = sanitizeTags((occurrence as { tags?: unknown }).tags);
+      }
+      if (occurrenceTags.length === 0) {
+        occurrenceTags = sanitizeTags(data.tags);
+      }
+
+      const occurrenceTitle = sanitizeString((occurrence as { title?: unknown }).title) ?? seriesTitle;
+      const occurrenceLocation = sanitizeString((occurrence as { location?: unknown }).location);
+
+      results.push({
+        eventId: occurrence.eventId,
+        seriesId: snapshot.id,
+        seriesTitle,
+        hostName,
+        title: occurrenceTitle,
+        startTime: timestampToIso(startTs),
+        endTime: timestampToIso(endTs),
+        location: occurrenceLocation,
+        tags: occurrenceTags,
+        contentType: 'event',
+        source: sourceId,
+        pinnedAt: summary?.pinnedAt ?? null,
+        derived: true,
+      });
+    }
+  }
+
+  return results;
 }
 
 export async function setPinnedEventStatus(
@@ -220,6 +416,9 @@ export async function setPinnedEventStatus(
         eventEndTime: metadata.endTime,
         contentType: metadata.contentType ?? 'event',
         source: metadata.source ?? null,
+        seriesId: metadata.seriesId,
+        seriesTitle: metadata.seriesTitle,
+        hostName: metadata.hostName,
         pinnedAt: FieldValue.serverTimestamp(),
       });
     } catch (error) {
@@ -235,9 +434,57 @@ export async function setPinnedEventStatus(
   }, { merge: true });
 }
 
+export async function setPinnedSeriesStatus(
+  userId: string,
+  seriesId: string,
+  pinned: boolean,
+): Promise<void> {
+  const trimmedUserId = userId.trim();
+  const trimmedSeriesId = seriesId.trim();
+
+  if (!trimmedUserId) {
+    throw new Error('userId is required');
+  }
+
+  if (!trimmedSeriesId) {
+    throw new Error('seriesId is required');
+  }
+
+  if (isMockUser(trimmedUserId)) {
+    return;
+  }
+
+  const userDocRef = db.collection(PINNED_EVENTS_COLLECTION).doc(trimmedUserId);
+  const entryRef = userDocRef.collection(SERIES_SUBCOLLECTION).doc(trimmedSeriesId);
+
+  if (pinned) {
+    try {
+      const metadata = await fetchSeriesSummary(trimmedSeriesId);
+      await entryRef.set({
+        seriesId: trimmedSeriesId,
+        title: metadata.title,
+        hostName: metadata.hostName,
+        tags: metadata.tags,
+        source: metadata.sourceId,
+        pinnedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      console.warn(`Failed to persist pinned series ${trimmedSeriesId}`, error);
+      return;
+    }
+  } else {
+    await entryRef.delete();
+  }
+
+  await userDocRef.set({
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
 export async function applyPinToggle(
   userId: string,
-  eventId: string,
+  contentId: string,
+  contentType: ContentType,
   metadata?: Record<string, unknown>,
 ): Promise<void> {
   const activeField = metadata ? metadata['active'] : undefined;
@@ -245,25 +492,11 @@ export async function applyPinToggle(
     ? activeField
     : true;
 
-  await setPinnedEventStatus(userId, eventId, activeValue);
-}
-
-function decodePageTokenOrThrow(token?: string): PageTokenPayload | null {
-  if (!token) {
-    return null;
+  if (contentType === 'event-series') {
+    await setPinnedSeriesStatus(userId, contentId, activeValue);
+  } else {
+    await setPinnedEventStatus(userId, contentId, activeValue);
   }
-  const payload = parsePageToken(token);
-  if (!payload) {
-    throw new Error('Invalid page token');
-  }
-  return payload;
-}
-
-function clampPageSize(pageSize?: number): number {
-  if (!pageSize || Number.isNaN(pageSize)) {
-    return DEFAULT_PAGE_SIZE;
-  }
-  return Math.min(Math.max(Math.floor(pageSize), 1), MAX_PAGE_SIZE);
 }
 
 export async function getPinnedEvents(
@@ -277,10 +510,7 @@ export async function getPinnedEvents(
 
   const { start, end } = buildWindow(options);
   const pageSize = clampPageSize(options.pageSize);
-  const cursor = decodePageTokenOrThrow(options.pageToken);
-
-  const windowStartTs = Timestamp.fromDate(start);
-  const windowEndTs = Timestamp.fromDate(end);
+  const offset = parsePageToken(options.pageToken);
 
   if (isMockUser(trimmedUserId)) {
     return {
@@ -294,49 +524,54 @@ export async function getPinnedEvents(
     };
   }
 
+  const windowStartTs = Timestamp.fromDate(start);
+  const windowEndTs = Timestamp.fromDate(end);
+
   const userDocRef = db.collection(PINNED_EVENTS_COLLECTION).doc(trimmedUserId);
   const entriesRef = userDocRef.collection(ENTRIES_SUBCOLLECTION);
+  const seriesRef = userDocRef.collection(SERIES_SUBCOLLECTION);
 
-  let query: FirebaseFirestore.Query = entriesRef
-    .where('eventStartTime', '>=', windowStartTs)
-    .where('eventStartTime', '<', windowEndTs)
-    .orderBy('eventStartTime', 'asc')
-    .orderBy('eventId', 'asc');
+  const [entrySnapshot, seriesSnapshot, userDoc] = await Promise.all([
+    entriesRef
+      .where('eventStartTime', '>=', windowStartTs)
+      .where('eventStartTime', '<', windowEndTs)
+      .orderBy('eventStartTime', 'asc')
+      .orderBy('eventId', 'asc')
+      .get(),
+    seriesRef.get(),
+    userDocRef.get(),
+  ]);
 
-  if (cursor) {
-    const cursorTimestamp = extractTimestamp(cursor.eventStartTime);
-    if (!cursorTimestamp) {
-      throw new Error('Invalid page token');
-    }
-    query = query.startAfter(cursorTimestamp, cursor.eventId);
+  const directEntries = entrySnapshot.docs.map(mapPinnedEvent);
+  const directEventIds = new Set(directEntries.map(entry => entry.eventId));
+
+  const seriesSummaries = new Map<string, PinnedSeriesRecord>();
+  for (const doc of seriesSnapshot.docs) {
+    seriesSummaries.set(doc.id, mapPinnedSeriesDoc(doc));
   }
 
-  const snapshotPromise = query.limit(pageSize + 1).get();
-  const userDocPromise = userDocRef.get();
-  const [snapshot, userDoc] = await Promise.all([snapshotPromise, userDocPromise]);
+  const seriesEntries = await expandSeriesEntries(
+    Array.from(seriesSummaries.keys()),
+    seriesSummaries,
+    start,
+    end,
+    directEventIds,
+  );
 
-  const docs = snapshot.docs.slice(0, pageSize);
-  const events = docs.map(mapPinnedEvent);
+  const combined = [...directEntries, ...seriesEntries];
+  combined.sort(compareEntries);
 
-  let nextPageToken: string | null = null;
-  if (snapshot.docs.length > pageSize) {
-    const lastDoc = docs[docs.length - 1];
-    const lastData = lastDoc.data();
-    const lastStartTime = extractTimestamp(lastData.eventStartTime);
-    if (lastStartTime) {
-      nextPageToken = encodePageToken({
-        eventStartTime: lastStartTime.toDate().toISOString(),
-        eventId: lastDoc.id,
-      });
-    }
-  }
+  const paginated = combined.slice(offset, offset + pageSize);
+  const nextPageToken = offset + pageSize < combined.length
+    ? encodePageToken(offset + pageSize)
+    : null;
 
   const updatedAt = userDoc.exists
     ? timestampToIso(extractTimestamp(userDoc.data()?.updatedAt))
     : null;
 
   return {
-    events,
+    events: paginated,
     nextPageToken,
     window: {
       start: start.toISOString(),
@@ -379,4 +614,8 @@ export async function getPinnedEventEntry(
   return mapPinnedEvent(doc);
 }
 
-export { PINNED_EVENTS_COLLECTION, ENTRIES_SUBCOLLECTION, DEFAULT_TIME_ZONE };
+export {
+  PINNED_EVENTS_COLLECTION,
+  ENTRIES_SUBCOLLECTION,
+  DEFAULT_TIME_ZONE,
+};

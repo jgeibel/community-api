@@ -14,7 +14,7 @@ const VALID_ACTIONS: InteractionAction[] = [
 ];
 
 const VALID_CONTENT_TYPES: ContentType[] = [
-  'event', 'flash-offer', 'poll', 'request', 'photo', 'announcement'
+  'event', 'event-series', 'flash-offer', 'poll', 'request', 'photo', 'announcement'
 ];
 
 const VALID_TIME_OF_DAY = ['morning', 'afternoon', 'evening', 'night'] as const;
@@ -132,8 +132,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    if (input.contentType === 'event' && input.action === 'bookmarked') {
-      await applyPinToggle(input.userId, input.contentId, input.metadata);
+    if ((input.contentType === 'event' || input.contentType === 'event-series') && input.action === 'bookmarked') {
+      await applyPinToggle(input.userId, input.contentId, input.contentType, input.metadata);
     }
 
     res.status(201).json({
@@ -169,7 +169,7 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
 
     const batch = db.batch();
     const interactionIds: string[] = [];
-    const pinUpdates: Array<{ userId: string; contentId: string; metadata?: Record<string, unknown> }> = [];
+    const pinUpdates: Array<{ userId: string; contentId: string; contentType: ContentType; metadata?: Record<string, unknown> }> = [];
 
     for (const input of interactions) {
       // Basic validation (skip detailed validation for performance)
@@ -204,10 +204,11 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      if (input.contentType === 'event' && input.action === 'bookmarked') {
+      if ((input.contentType === 'event' || input.contentType === 'event-series') && input.action === 'bookmarked') {
         pinUpdates.push({
           userId: input.userId,
           contentId: input.contentId,
+          contentType: input.contentType,
           metadata: input.metadata,
         });
       }
@@ -218,6 +219,7 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
       await Promise.all(pinUpdates.map(update => applyPinToggle(
         update.userId,
         update.contentId,
+        update.contentType ?? 'event',
         update.metadata,
       )));
     }
