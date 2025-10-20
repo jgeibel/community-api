@@ -3,6 +3,8 @@ import {
   getPinnedEvents,
   setPinnedEventStatus,
   getPinnedEventEntry,
+  setPinnedSeriesStatus,
+  getPinnedSeriesEntry,
   PinnedEventsQueryOptions,
 } from '../services/pinnedEventsService';
 
@@ -114,9 +116,11 @@ router.post('/:userId/pinned-events', async (req: Request, res: Response): Promi
       return;
     }
 
-    const { eventId, pinned } = req.body as {
+    const { eventId, pinned, contentType, metadata } = req.body as {
       eventId?: unknown;
       pinned?: unknown;
+      contentType?: unknown;
+      metadata?: Record<string, unknown> | undefined;
     };
 
     if (typeof eventId !== 'string' || eventId.trim().length === 0) {
@@ -129,17 +133,33 @@ router.post('/:userId/pinned-events', async (req: Request, res: Response): Promi
       return;
     }
 
-    const normalizedPinned = pinned ?? true;
-    await setPinnedEventStatus(userId, eventId, normalizedPinned);
+    const normalizedPinned = typeof pinned === 'boolean'
+      ? pinned
+      : typeof metadata?.active === 'boolean'
+        ? metadata.active
+        : true;
 
-    const entry = normalizedPinned
-      ? await getPinnedEventEntry(userId, eventId)
-      : null;
+    const contentTypeValue = typeof contentType === 'string' ? contentType : 'event';
 
-    res.json({
-      pinned: normalizedPinned,
-      event: entry,
-    });
+    if (contentTypeValue === 'event-series') {
+      await setPinnedSeriesStatus(userId, eventId, normalizedPinned);
+      const seriesEntry = normalizedPinned ? await getPinnedSeriesEntry(userId, eventId) : null;
+      res.json({
+        pinned: normalizedPinned,
+        series: seriesEntry,
+      });
+    } else {
+      await setPinnedEventStatus(userId, eventId, normalizedPinned);
+
+      const entry = normalizedPinned
+        ? await getPinnedEventEntry(userId, eventId)
+        : null;
+
+      res.json({
+        pinned: normalizedPinned,
+        event: entry,
+      });
+    }
   } catch (error) {
     console.error('Failed to update pinned events', error);
     res.status(500).json({

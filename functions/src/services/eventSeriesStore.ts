@@ -44,10 +44,11 @@ export class EventSeriesStore {
   async attachEvent(
     event: CanonicalEvent,
     options: AttachEventOptions,
-  ): Promise<{ seriesId: string; host: SeriesHost }> {
+  ): Promise<{ seriesId: string; host: SeriesHost; created: boolean }> {
     const host = this.buildHost(options);
     const seriesId = this.buildSeriesId(host.id, event.title);
     const docRef = this.db.collection(SERIES_COLLECTION).doc(seriesId);
+    let created = false;
 
     await this.db.runTransaction(async tx => {
       const snapshot = await tx.get(docRef);
@@ -79,6 +80,7 @@ export class EventSeriesStore {
         };
 
         tx.set(docRef, series);
+        created = true;
         return;
       }
 
@@ -122,7 +124,7 @@ export class EventSeriesStore {
       }, { merge: true });
     });
 
-    return { seriesId, host };
+    return { seriesId, host, created };
   }
 
   private buildHost(options: AttachEventOptions): SeriesHost {

@@ -1,5 +1,6 @@
 import { GoogleCalendarConnector, GoogleCalendarRawEvent } from '../connectors/googleCalendarConnector';
 import { normalizeGoogleCalendarEvent } from '../normalizers/googleCalendarNormalizer';
+import { firestore } from '../firebase/admin';
 import { EventStore } from '../services/eventStore';
 import { CanonicalEvent, EventClassification, EventTagCandidate, RawEventPayload } from '../models/event';
 import { EventTagClassifier } from '../classification/eventClassifier';
@@ -10,6 +11,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import type { ClassificationCandidate, ClassificationResult } from '../classification/types';
 import { EventSeriesStore } from '../services/eventSeriesStore';
 import { buildStableId, createSlug } from '../utils/slug';
+import { EventCategoryAssignmentService } from '../services/eventCategoryAssignment';
 
 export interface GoogleCalendarIngestConfig {
   calendarId: string;
@@ -52,6 +54,7 @@ export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): 
   const connector = new GoogleCalendarConnector({ calendarId: config.calendarId, label: config.label });
   const store = new EventStore();
   const seriesStore = new EventSeriesStore();
+  const categoryAssignmentService = new EventCategoryAssignmentService();
   const embeddingProvider = new OpenAIEmbeddingProvider();
   const classifier = new EventTagClassifier({ embeddings: embeddingProvider });
   const forceRefresh = Boolean(config.forceRefresh);
@@ -82,7 +85,7 @@ export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): 
       const existingUpdated = existingData?.rawSnapshot?.updated;
       const incomingUpdated = payload.raw.raw.updated ?? null;
 
-      const reuseClassification = Boolean(
+      const reuseClassification = !forceRefresh && Boolean(
         existingSnapshot && incomingUpdated && existingUpdated && existingUpdated === incomingUpdated,
       );
 
@@ -151,9 +154,10 @@ export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): 
 
   // Phase 2: Now embed with enriched text (title + description + tags)
   const textEntriesForEmbedding = prepared
-    .filter(entry => !entry.reuseClassification && entry.existingTags.length > 0)
-    .map((entry, originalIndex) => ({
-      originalIndex: prepared.indexOf(entry),
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => !entry.reuseClassification && entry.existingTags.length > 0)
+    .map(({ entry, index }) => ({
+      originalIndex: index,
       enrichedText: buildEnrichedText(
         entry.normalized.title,
         entry.normalized.description,
@@ -223,18 +227,52 @@ export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): 
 
       applyClassification(normalized, classification, { additionalTags: proposalSlugs });
 
+      let categoryAssignmentResult: { categoryId: string; categoryName: string } | null = null;
       try {
         const hostContext = deriveHostContext(normalized, payload);
-        const { seriesId } = await seriesStore.attachEvent(normalized, {
+        const attachment = await seriesStore.attachEvent(normalized, {
           hostId: hostContext.hostIdSeed,
           hostName: hostContext.hostName,
           organizer: hostContext.organizer,
           sourceId: payload.sourceId,
           rawPayload: payload,
         });
-        normalized.seriesId = seriesId;
+        normalized.seriesId = attachment.seriesId;
+
+        try {
+          categoryAssignmentResult = await categoryAssignmentService.assignSeries({
+            seriesId: attachment.seriesId,
+            host: {
+              id: attachment.host.id,
+              name: attachment.host.name ?? hostContext.hostName,
+            },
+            force: forceRefresh || attachment.created,
+          });
+        } catch (categoryError) {
+          console.error(`Failed to assign category for series ${attachment.seriesId}`, categoryError);
+        }
       } catch (seriesError) {
         console.error(`Failed to attach event ${normalized.id} to series`, seriesError);
+      }
+
+      if (categoryAssignmentResult) {
+        normalized.seriesCategoryId = categoryAssignmentResult.categoryId;
+        normalized.seriesCategoryName = categoryAssignmentResult.categoryName;
+      } else if (normalized.seriesId) {
+        try {
+          const snapshot = await firestore.collection('eventSeries').doc(normalized.seriesId).get();
+          const seriesData = snapshot.data();
+          if (seriesData) {
+            const categoryId = typeof seriesData.categoryId === 'string' ? seriesData.categoryId : null;
+            const categoryName = typeof seriesData.categoryName === 'string' ? seriesData.categoryName : null;
+            if (categoryId || categoryName) {
+              normalized.seriesCategoryId = categoryId ?? null;
+              normalized.seriesCategoryName = categoryName ?? null;
+            }
+          }
+        } catch (categoryFetchError) {
+          console.warn(`Failed to fetch category metadata for series ${normalized.seriesId}`, categoryFetchError);
+        }
       }
 
       const result = await store.saveEvent(normalized, payload.raw, existingSnapshot);

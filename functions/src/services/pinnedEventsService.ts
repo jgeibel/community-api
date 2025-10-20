@@ -17,6 +17,8 @@ export interface PinnedEventEntry {
   seriesId?: string | null;
   seriesTitle?: string | null;
   hostName?: string | null;
+  seriesCategoryId?: string | null;
+  seriesCategoryName?: string | null;
   title: string | null;
   startTime: string | null;
   endTime: string | null;
@@ -164,6 +166,8 @@ function mapPinnedEvent(doc: FirebaseFirestore.DocumentSnapshot): PinnedEventEnt
     seriesId: sanitizeString(data.seriesId),
     seriesTitle: sanitizeString(data.seriesTitle),
     hostName: sanitizeString(data.hostName),
+    seriesCategoryId: sanitizeString(data.seriesCategoryId),
+    seriesCategoryName: sanitizeString(data.seriesCategoryName),
     title: sanitizeString(data.title),
     startTime: timestampToIso(extractTimestamp(data.eventStartTime)),
     endTime: timestampToIso(extractTimestamp(data.eventEndTime)),
@@ -198,6 +202,8 @@ async function fetchEventMetadata(eventId: string): Promise<{
   seriesId: string | null;
   seriesTitle: string | null;
   hostName: string | null;
+  seriesCategoryId: string | null;
+  seriesCategoryName: string | null;
 }> {
   const eventDoc = await db.collection('events').doc(eventId).get();
   if (!eventDoc.exists) {
@@ -216,6 +222,8 @@ async function fetchEventMetadata(eventId: string): Promise<{
 
   let seriesTitle: string | null = null;
   let hostName: string | null = null;
+  let seriesCategoryId: string | null = null;
+  let seriesCategoryName: string | null = null;
 
   if (seriesId) {
     try {
@@ -224,6 +232,8 @@ async function fetchEventMetadata(eventId: string): Promise<{
         const seriesData = seriesDoc.data() ?? {};
         seriesTitle = sanitizeString(seriesData.title);
         hostName = sanitizeString(seriesData.host?.name);
+        seriesCategoryId = sanitizeString(seriesData.categoryId);
+        seriesCategoryName = sanitizeString(seriesData.categoryName);
       }
     } catch (error) {
       console.warn(`Failed to fetch series metadata for ${seriesId}`, error);
@@ -241,6 +251,8 @@ async function fetchEventMetadata(eventId: string): Promise<{
     seriesId,
     seriesTitle,
     hostName,
+    seriesCategoryId,
+    seriesCategoryName,
   };
 }
 
@@ -329,6 +341,8 @@ async function expandSeriesEntries(
     const seriesTitle = sanitizeString(data.title) ?? summary?.title ?? null;
     const hostName = sanitizeString(data.host?.name) ?? summary?.hostName ?? null;
     const sourceId = sanitizeString(data.source?.sourceId);
+    const categoryId = sanitizeString(data.categoryId);
+    const categoryName = sanitizeString(data.categoryName);
 
     for (const occurrence of occurrences) {
       if (!occurrence?.eventId) {
@@ -365,6 +379,8 @@ async function expandSeriesEntries(
         seriesId: snapshot.id,
         seriesTitle,
         hostName,
+        seriesCategoryId: categoryId,
+        seriesCategoryName: categoryName,
         title: occurrenceTitle,
         startTime: timestampToIso(startTs),
         endTime: timestampToIso(endTs),
@@ -419,6 +435,8 @@ export async function setPinnedEventStatus(
         seriesId: metadata.seriesId,
         seriesTitle: metadata.seriesTitle,
         hostName: metadata.hostName,
+        seriesCategoryId: metadata.seriesCategoryId,
+        seriesCategoryName: metadata.seriesCategoryName,
         pinnedAt: FieldValue.serverTimestamp(),
       });
     } catch (error) {
@@ -612,6 +630,39 @@ export async function getPinnedEventEntry(
   }
 
   return mapPinnedEvent(doc);
+}
+
+export async function getPinnedSeriesEntry(
+  userId: string,
+  seriesId: string,
+): Promise<PinnedSeriesRecord | null> {
+  const trimmedUserId = userId.trim();
+  const trimmedSeriesId = seriesId.trim();
+
+  if (!trimmedUserId) {
+    throw new Error('userId is required');
+  }
+
+  if (!trimmedSeriesId) {
+    throw new Error('seriesId is required');
+  }
+
+  if (isMockUser(trimmedUserId)) {
+    return null;
+  }
+
+  const doc = await db
+    .collection(PINNED_EVENTS_COLLECTION)
+    .doc(trimmedUserId)
+    .collection(SERIES_SUBCOLLECTION)
+    .doc(trimmedSeriesId)
+    .get();
+
+  if (!doc.exists) {
+    return null;
+  }
+
+  return mapPinnedSeriesDoc(doc);
 }
 
 export {

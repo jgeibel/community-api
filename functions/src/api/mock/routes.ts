@@ -58,6 +58,7 @@ router.get('/feed', async (req: Request, res: Response): Promise<void> => {
       const startIndex = pageToken ? parsePageOffset(pageToken) : 0;
       const paginatedItems = mixed.slice(startIndex, startIndex + pageSize);
       const hasMore = startIndex + pageSize < mixed.length;
+      const isCaughtUp = !hasMore;
 
       res.json({
         count: paginatedItems.length,
@@ -75,6 +76,7 @@ router.get('/feed', async (req: Request, res: Response): Promise<void> => {
         nextPageToken: hasMore
           ? Buffer.from(String(startIndex + pageSize)).toString('base64')
           : null,
+        isCaughtUp,
         personalized: true,
         mode: 'mock-persona',
       });
@@ -105,6 +107,7 @@ router.get('/feed', async (req: Request, res: Response): Promise<void> => {
         const startIndex = pageToken ? parsePageOffset(pageToken) : 0;
         const paginatedItems = mixed.slice(startIndex, startIndex + pageSize);
         const hasMore = startIndex + pageSize < mixed.length;
+        const isCaughtUp = !hasMore;
 
         // Map back to response format
         const events = paginatedItems.map(item => {
@@ -128,6 +131,7 @@ router.get('/feed', async (req: Request, res: Response): Promise<void> => {
           nextPageToken: hasMore
             ? Buffer.from(String(startIndex + pageSize)).toString('base64')
             : null,
+          isCaughtUp,
           personalized: true,
           mode: 'hybrid',
         });
@@ -143,6 +147,7 @@ router.get('/feed', async (req: Request, res: Response): Promise<void> => {
     const startIndex = pageToken ? parsePageOffset(pageToken) : 0;
     const paginatedItems = sorted.slice(startIndex, startIndex + pageSize);
     const hasMore = startIndex + pageSize < sorted.length;
+    const isCaughtUp = !hasMore;
 
     res.json({
       count: paginatedItems.length,
@@ -160,6 +165,7 @@ router.get('/feed', async (req: Request, res: Response): Promise<void> => {
       nextPageToken: hasMore
         ? Buffer.from(String(startIndex + pageSize)).toString('base64')
         : null,
+      isCaughtUp,
       personalized: false,
       mode: 'chronological',
     });

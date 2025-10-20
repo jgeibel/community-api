@@ -39,6 +39,8 @@ export class EventStore {
       title: event.title,
       description: event.description ?? null,
       seriesId: event.seriesId ?? null,
+      seriesCategoryId: event.seriesCategoryId ?? null,
+      seriesCategoryName: event.seriesCategoryName ?? null,
       startTime: Timestamp.fromDate(new Date(event.startTime)),
       endTime: event.endTime ? Timestamp.fromDate(new Date(event.endTime)) : null,
       timeZone: event.timeZone ?? null,
@@ -61,6 +63,20 @@ export class EventStore {
     await docRef.set(pruneUndefined(data));
 
     return snapshot.exists ? 'updated' : 'created';
+  }
+
+  async updateEventSeriesInfo(
+    eventId: string,
+    seriesId: string | null,
+    categoryId: string | null,
+    categoryName: string | null,
+  ): Promise<void> {
+    const docRef = this.db.collection('events').doc(eventId);
+    await docRef.set(pruneUndefined({
+      seriesId: seriesId ?? null,
+      seriesCategoryId: categoryId ?? null,
+      seriesCategoryName: categoryName ?? null,
+    }), { merge: true });
   }
 }
 

@@ -9,9 +9,18 @@ import mockRoutes from './mock/routes';
 import { rankContent, applyExplorationMix, ContentItem } from '../services/feedRankingService';
 import { hasEnoughDataForPersonalization } from '../services/userProfileService';
 import userRoutes from './users';
+import { FeedSeriesData } from './feedTypes';
+import { CategoryBundleService, SeriesCandidate, CategoryBundleMetadata } from '../services/categoryBundleService';
+import {
+  extractVector,
+  mapSeriesForFeed,
+  resolveSeriesCreatedAt,
+  sanitizeFeedStats,
+} from './feedHelpers';
 
 const app = express();
 const tagProposalRepository = new TagProposalRepository();
+const categoryBundleService = new CategoryBundleService();
 app.use(cors({ origin: true }));
 app.use(express.json());
 
@@ -79,7 +88,7 @@ app.get('/feed', async (req: Request, res: Response): Promise<void> => {
       : false;
 
     // Fetch candidate series (larger pool for ranking)
-    const candidateLimit = hasPersonalizationData ? 500 : pageSize + 5;
+    const candidateLimit = hasPersonalizationData ? 500 : Math.max(pageSize + 5, 200);
     let query: FirebaseFirestore.Query = db
       .collection('eventSeries')
       .where('nextStartTime', '>=', startTs)
@@ -92,12 +101,12 @@ app.get('/feed', async (req: Request, res: Response): Promise<void> => {
 
     const snapshot = await query.get();
 
-    const candidates: ContentItem[] = snapshot.docs.map(doc => {
+    const seriesCandidates: SeriesCandidate[] = snapshot.docs.map(doc => {
       const data = doc.data();
       const series = mapSeriesForFeed(doc);
       const createdAt = resolveSeriesCreatedAt(data, series);
 
-      return {
+      const contentItem: ContentItem = {
         id: doc.id,
         title: series.title ?? 'Untitled',
         contentType: 'event-series',
@@ -109,6 +118,16 @@ app.get('/feed', async (req: Request, res: Response): Promise<void> => {
           series,
         },
       };
+
+      return {
+        contentItem,
+        series,
+      };
+    });
+
+    const candidates = await categoryBundleService.buildBundles(userId, seriesCandidates, {
+      windowStart: startDate,
+      windowEnd: endDateExclusive,
     });
 
     // Use behavioral ranking if user has enough data
@@ -139,8 +158,35 @@ app.get('/feed', async (req: Request, res: Response): Promise<void> => {
     const startIndex = pageToken ? parsePageOffset(pageToken) : 0;
     const paginatedItems = rankedCandidates.slice(startIndex, startIndex + pageSize);
     const hasMore = startIndex + pageSize < rankedCandidates.length;
+    const isCaughtUp = !hasMore;
 
     const events = paginatedItems.map(item => {
+      const bundle = item.metadata?.bundle as CategoryBundleMetadata | undefined;
+      if (bundle?.type === 'category-bundle') {
+        return {
+          id: item.id,
+          title: item.title,
+          description: null,
+          summary: null,
+          tags: item.tags,
+          contentType: 'event-category-bundle',
+          host: bundle.host,
+          category: bundle.category,
+          bundle: {
+            totalSeriesCount: bundle.totalSeriesCount,
+            newSeriesCount: bundle.newSeriesCount,
+            seriesIds: bundle.seriesIds,
+            newSeriesIds: bundle.newSeriesIds,
+            displaySeries: bundle.displaySeries,
+            allSeries: bundle.allSeries,
+            isNewCategory: bundle.isNewCategory,
+            state: bundle.bundleState,
+          },
+          score: item.score,
+          scoreBreakdown: item.scoreBreakdown,
+        };
+      }
+
       const series = item.metadata?.series as FeedSeriesData | undefined;
       if (!series) {
         return null;
@@ -154,6 +200,7 @@ app.get('/feed', async (req: Request, res: Response): Promise<void> => {
         tags: series.tags,
         contentType: item.contentType,
         host: series.host,
+        category: series.category,
         nextOccurrence: series.nextOccurrence,
         upcomingOccurrences: series.upcomingOccurrences,
         source: series.source,
@@ -168,6 +215,7 @@ app.get('/feed', async (req: Request, res: Response): Promise<void> => {
       nextPageToken: hasMore
         ? Buffer.from(String(startIndex + pageSize)).toString('base64')
         : null,
+      isCaughtUp,
       window: {
         start: startDate.toISOString(),
         end: endDateExclusive.toISOString(),
@@ -208,18 +256,6 @@ app.get('/tag-proposals', async (req: Request, res: Response): Promise<void> => 
 // HELPER FUNCTIONS
 // ============================================
 
-function extractVector(value: unknown): number[] | null {
-  if (!Array.isArray(value)) {
-    return null;
-  }
-
-  const filtered = value.filter(item => typeof item === 'number');
-  if (filtered.length === 0) {
-    return null;
-  }
-  return filtered as number[];
-}
-
 function parsePageOffset(token: string): number {
   try {
     const decoded = Buffer.from(token, 'base64').toString('utf8');
@@ -232,180 +268,6 @@ function parsePageOffset(token: string): number {
     console.warn('Invalid page token offset', error);
     throw new Error('INVALID_PAGE_TOKEN');
   }
-}
-
-type FeedSeriesOccurrence = {
-  eventId: string;
-  title: string | null;
-  startTime: string;
-  endTime: string | null;
-  location: string | null;
-  tags: string[];
-};
-
-type FeedSeriesHost = {
-  id?: string | null;
-  name?: string | null;
-  organizer?: string | null;
-  sourceIds?: string[];
-} | null;
-
-type FeedSeriesData = {
-  id: string;
-  title: string | null;
-  description: string | null;
-  summary: string | null;
-  host: FeedSeriesHost;
-  tags: string[];
-  source: unknown;
-  nextOccurrence: FeedSeriesOccurrence | null;
-  upcomingOccurrences: FeedSeriesOccurrence[];
-};
-
-function mapSeriesForFeed(doc: FirebaseFirestore.QueryDocumentSnapshot): FeedSeriesData {
-  const data = doc.data() ?? {};
-  const upcomingOccurrences = Array.isArray(data.upcomingOccurrences)
-    ? data.upcomingOccurrences
-        .map(serializeSeriesOccurrence)
-        .filter((occ): occ is FeedSeriesOccurrence => Boolean(occ))
-    : [];
-  const nextOccurrence = serializeSeriesOccurrence(data.nextOccurrence) ?? (upcomingOccurrences[0] ?? null);
-
-  return {
-    id: doc.id,
-    title: typeof data.title === 'string' ? data.title : null,
-    description: typeof data.description === 'string' ? data.description : null,
-    summary: typeof data.summary === 'string' ? data.summary : null,
-    host: sanitizeSeriesHost(data.host),
-    tags: Array.isArray(data.tags) ? data.tags.filter((tag): tag is string => typeof tag === 'string') : [],
-    source: data.source ?? null,
-    nextOccurrence,
-    upcomingOccurrences,
-  };
-}
-
-function resolveSeriesCreatedAt(raw: Record<string, unknown>, series: FeedSeriesData): Date {
-  const created = extractFirestoreTimestamp(raw.createdAt);
-  if (created) {
-    return created.toDate();
-  }
-  const updated = extractFirestoreTimestamp(raw.updatedAt);
-  if (updated) {
-    return updated.toDate();
-  }
-
-  if (series.nextOccurrence?.startTime) {
-    const parsed = new Date(series.nextOccurrence.startTime);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed;
-    }
-  }
-
-  return new Date();
-}
-
-function sanitizeFeedStats(value: unknown): { views: number; likes: number; shares: number; bookmarks: number } {
-  if (!value || typeof value !== 'object') {
-    return { views: 0, likes: 0, shares: 0, bookmarks: 0 };
-  }
-
-  const stats = value as Record<string, unknown>;
-  return {
-    views: typeof stats.views === 'number' ? stats.views : 0,
-    likes: typeof stats.likes === 'number' ? stats.likes : 0,
-    shares: typeof stats.shares === 'number' ? stats.shares : 0,
-    bookmarks: typeof stats.bookmarks === 'number' ? stats.bookmarks : 0,
-  };
-}
-
-function sanitizeSeriesHost(value: unknown): FeedSeriesHost {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const host = value as {
-    id?: unknown;
-    name?: unknown;
-    organizer?: unknown;
-    sourceIds?: unknown;
-  };
-
-  const sourceIds = Array.isArray(host.sourceIds)
-    ? host.sourceIds.filter((item): item is string => typeof item === 'string')
-    : [];
-
-  return {
-    id: typeof host.id === 'string' ? host.id : null,
-    name: typeof host.name === 'string' ? host.name : null,
-    organizer: typeof host.organizer === 'string' ? host.organizer : null,
-    sourceIds,
-  };
-}
-
-function serializeSeriesOccurrence(value: unknown): FeedSeriesOccurrence | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const occurrence = value as {
-    eventId?: unknown;
-    title?: unknown;
-    startTime?: unknown;
-    endTime?: unknown;
-    location?: unknown;
-    tags?: unknown;
-  };
-
-  if (typeof occurrence.eventId !== 'string') {
-    return null;
-  }
-
-  const startTs = extractFirestoreTimestamp(occurrence.startTime);
-  if (!startTs) {
-    return null;
-  }
-
-  const endTs = extractFirestoreTimestamp(occurrence.endTime);
-  const tags = Array.isArray(occurrence.tags)
-    ? occurrence.tags.filter((tag): tag is string => typeof tag === 'string')
-    : [];
-
-  return {
-    eventId: occurrence.eventId,
-    title: typeof occurrence.title === 'string' ? occurrence.title : null,
-    startTime: startTs.toDate().toISOString(),
-    endTime: endTs ? endTs.toDate().toISOString() : null,
-    location: typeof occurrence.location === 'string' ? occurrence.location : null,
-    tags,
-  };
-}
-
-function extractFirestoreTimestamp(value: unknown): admin.firestore.Timestamp | null {
-  if (!value) {
-    return null;
-  }
-
-  if (value instanceof admin.firestore.Timestamp) {
-    return value;
-  }
-
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { toDate?: () => Date }).toDate === 'function'
-  ) {
-    const date = (value as { toDate: () => Date }).toDate();
-    return admin.firestore.Timestamp.fromDate(date);
-  }
-
-  if (typeof value === 'string') {
-    const parsed = new Date(value);
-    if (!Number.isNaN(parsed.getTime())) {
-      return admin.firestore.Timestamp.fromDate(parsed);
-    }
-  }
-
-  return null;
 }
 
 export default app;

@@ -27,6 +27,9 @@ export interface EventSeries {
   breadcrumbs: EventBreadcrumb[];
   source: EventSourceInfo;
   venue?: EventVenue | null;
+  categoryId?: string | null;
+  categoryName?: string | null;
+  categorySlug?: string | null;
   nextOccurrence: SeriesOccurrence | null;
   upcomingOccurrences: SeriesOccurrence[];
   nextStartTime: FirebaseFirestore.Timestamp | null;

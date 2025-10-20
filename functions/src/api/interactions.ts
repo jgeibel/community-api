@@ -3,9 +3,11 @@ import { firestore } from '../firebase/admin';
 import { CreateInteractionInput, InteractionAction, ContentType } from '../models/interaction';
 import { FieldValue } from 'firebase-admin/firestore';
 import { applyPinToggle } from '../services/pinnedEventsService';
+import { CategoryBundleStateService } from '../services/categoryBundleStateService';
 
 const router = Router();
 const db = firestore;
+const categoryBundleStateService = new CategoryBundleStateService();
 
 // Valid action types for validation
 const VALID_ACTIONS: InteractionAction[] = [
@@ -14,7 +16,14 @@ const VALID_ACTIONS: InteractionAction[] = [
 ];
 
 const VALID_CONTENT_TYPES: ContentType[] = [
-  'event', 'event-series', 'flash-offer', 'poll', 'request', 'photo', 'announcement'
+  'event',
+  'event-series',
+  'event-category-bundle',
+  'flash-offer',
+  'poll',
+  'request',
+  'photo',
+  'announcement',
 ];
 
 const VALID_TIME_OF_DAY = ['morning', 'afternoon', 'evening', 'night'] as const;
@@ -136,6 +145,24 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       await applyPinToggle(input.userId, input.contentId, input.contentType, input.metadata);
     }
 
+    if (input.contentType === 'event-category-bundle') {
+      let bundleState: BundleState;
+      try {
+        bundleState = requireBundleState(input.metadata);
+      } catch (error) {
+        if (error instanceof BundleStateValidationError) {
+          res.status(400).json({
+            error: 'Invalid bundle metadata',
+            message: error.message,
+          });
+          return;
+        }
+        throw error;
+      }
+
+      await categoryBundleStateService.markSeen(input.userId, bundleState.categoryId, bundleState.version);
+    }
+
     res.status(201).json({
       success: true,
       interactionId: docRef.id,
@@ -170,6 +197,7 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
     const batch = db.batch();
     const interactionIds: string[] = [];
     const pinUpdates: Array<{ userId: string; contentId: string; contentType: ContentType; metadata?: Record<string, unknown> }> = [];
+    const bundleUpdates: Array<{ userId: string; categoryId: string; version: number }> = [];
 
     for (const input of interactions) {
       // Basic validation (skip detailed validation for performance)
@@ -212,6 +240,24 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
           metadata: input.metadata,
         });
       }
+
+      if (input.contentType === 'event-category-bundle') {
+        let bundleState: BundleState;
+        try {
+          bundleState = requireBundleState(input.metadata);
+        } catch (error) {
+          if (error instanceof BundleStateValidationError) {
+            throw error;
+          }
+          throw error;
+        }
+
+        bundleUpdates.push({
+          userId: input.userId,
+          categoryId: bundleState.categoryId,
+          version: bundleState.version,
+        });
+      }
     }
 
     await batch.commit();
@@ -223,6 +269,11 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
         update.metadata,
       )));
     }
+    if (bundleUpdates.length > 0) {
+      await Promise.all(bundleUpdates.map(update =>
+        categoryBundleStateService.markSeen(update.userId, update.categoryId, update.version)
+      ));
+    }
 
     res.status(201).json({
       success: true,
@@ -230,6 +281,14 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
       interactionIds,
     });
   } catch (error) {
+    if (error instanceof BundleStateValidationError) {
+      res.status(400).json({
+        error: 'Invalid bundle metadata',
+        message: error.message,
+      });
+      return;
+    }
+
     console.error('Failed to record batch interactions', error);
     res.status(500).json({
       error: 'Failed to record batch interactions',
@@ -239,3 +298,49 @@ router.post('/batch', async (req: Request, res: Response): Promise<void> => {
 });
 
 export default router;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+interface BundleState {
+  categoryId: string;
+  version: number;
+}
+
+class BundleStateValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BundleStateValidationError';
+  }
+}
+
+function requireBundleState(metadata: unknown): BundleState {
+  if (!isRecord(metadata)) {
+    throw new BundleStateValidationError('metadata.bundleState must be provided for event-category-bundle interactions');
+  }
+
+  const state = metadata.bundleState;
+  if (!isRecord(state)) {
+    throw new BundleStateValidationError('metadata.bundleState must be an object with categoryId and version');
+  }
+
+  const categoryIdRaw = state.categoryId;
+  if (typeof categoryIdRaw !== 'string' || categoryIdRaw.trim().length === 0) {
+    throw new BundleStateValidationError('metadata.bundleState.categoryId must be a non-empty string');
+  }
+
+  const versionRaw = state.version;
+  if (typeof versionRaw !== 'number' || !Number.isFinite(versionRaw)) {
+    throw new BundleStateValidationError('metadata.bundleState.version must be a finite number');
+  }
+
+  if (versionRaw < 0) {
+    throw new BundleStateValidationError('metadata.bundleState.version must be >= 0');
+  }
+
+  return {
+    categoryId: categoryIdRaw.trim(),
+    version: versionRaw,
+  };
+}
