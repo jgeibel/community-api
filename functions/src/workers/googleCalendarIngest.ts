@@ -1,4 +1,4 @@
-import { ingestSource, type IngestStats, type SourceFetchOptions } from './sourceIngest';
+import { ingestSource, type IngestStats, type SourceFetchOptions, type SourceHostConfig } from './sourceIngest';
 import { GoogleCalendarAdapter } from '../connectors/googleCalendarAdapter';
 
 export interface GoogleCalendarIngestConfig {
@@ -8,6 +8,7 @@ export interface GoogleCalendarIngestConfig {
   startDate?: Date;
   endDate?: Date;
   forceRefresh?: boolean;
+  host: SourceHostConfig;
 }
 
 export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): Promise<IngestStats> {
@@ -32,6 +33,7 @@ export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): 
     adapter,
     fetchOptions,
     forceRefresh: config.forceRefresh,
+    hostConfig: config.host,
   });
 }
 

@@ -3,41 +3,50 @@ import type { Request, Response } from 'express';
 import apiApp from './api/routes';
 import { ingestGoogleCalendar } from './workers/googleCalendarIngest';
 import { ingestTribeEvents } from './workers/tribeEventsIngest';
-import type { IngestStats } from './workers/sourceIngest';
+import type { IngestStats, SourceHostConfig } from './workers/sourceIngest';
 import { addUtcDays, startOfDayInTimeZone } from './utils/timezone';
 
 const DEFAULT_TIME_ZONE = 'America/Los_Angeles';
 
-interface ScheduleConfig {
+export interface ScheduleConfig {
   lookBackDays: number;
   lookAheadDays: number;
   chunkSizeDays: number;
 }
 
-interface BaseCommunitySource {
+export interface BaseCommunitySource {
   id: string;
+  host: SourceHostConfig;
   label?: string;
   schedule: ScheduleConfig;
 }
 
-interface GoogleCalendarSource extends BaseCommunitySource {
+export interface GoogleCalendarSource extends BaseCommunitySource {
   kind: 'google-calendar';
   calendarId: string;
 }
 
-interface TribeEventsSource extends BaseCommunitySource {
+export interface TribeEventsSource extends BaseCommunitySource {
   kind: 'tribe-events';
   baseUrl: string;
 }
 
-type CommunitySource = GoogleCalendarSource | TribeEventsSource;
+export type CommunitySource = GoogleCalendarSource | TribeEventsSource;
 
-const COMMUNITY_EVENT_SOURCES: CommunitySource[] = [
+export const COMMUNITY_EVENT_SOURCES: CommunitySource[] = [
   {
     id: 'community-google-calendar',
     kind: 'google-calendar',
     calendarId: '007c8904d97ab1f21a718fab5eab13f5d95d1b0506be7352161bae2aafa8bdd2@group.calendar.google.com',
-    label: 'Community Events Calendar',
+    label: 'Orcas Island Park & Rec',
+    host: {
+      id: 'host:orcas-island-park-rec',
+      name: 'Orcas Island Park & Rec',
+      slug: 'orcas-island-park-rec',
+      type: 'parks-and-rec',
+      calendarUrl: 'https://calendar.google.com/calendar/embed?src=007c8904d97ab1f21a718fab5eab13f5d95d1b0506be7352161bae2aafa8bdd2@group.calendar.google.com',
+      timeZone: 'America/Los_Angeles',
+    },
     schedule: {
       lookBackDays: 1,
       lookAheadDays: 60,
@@ -49,6 +58,15 @@ const COMMUNITY_EVENT_SOURCES: CommunitySource[] = [
     kind: 'tribe-events',
     baseUrl: 'https://orcascenter.org',
     label: 'Orcas Center',
+    host: {
+      id: 'host:orcas-center',
+      name: 'Orcas Center',
+      slug: 'orcas-center',
+      type: 'arts-venue',
+      websiteUrl: 'https://orcascenter.org',
+      calendarUrl: 'https://orcascenter.org/events',
+      timeZone: 'America/Los_Angeles',
+    },
     schedule: {
       lookBackDays: 14,
       lookAheadDays: 120,
@@ -234,7 +252,7 @@ export const triggerCommunityEventsSyncForDay = functions
     });
   });
 
-interface ChunkOptions {
+export interface ChunkOptions {
   startDate?: Date;
   totalSpanDays?: number;
   chunkSizeDays?: number;
@@ -248,7 +266,7 @@ interface WindowIngestOptions {
   forceRefresh?: boolean;
 }
 
-async function ingestSourceInChunks(source: CommunitySource, options?: ChunkOptions): Promise<IngestStats> {
+export async function ingestSourceInChunks(source: CommunitySource, options?: ChunkOptions): Promise<IngestStats> {
   const schedule = source.schedule;
   const chunkSize = options?.chunkSizeDays ?? schedule.chunkSizeDays;
   const now = new Date();
@@ -310,6 +328,7 @@ async function ingestSourceWindow(source: CommunitySource, options: WindowIngest
       endDate: options.endDate,
       targetDate: options.targetDate,
       forceRefresh: options.forceRefresh,
+      host: source.host,
     });
   }
 
@@ -320,17 +339,18 @@ async function ingestSourceWindow(source: CommunitySource, options: WindowIngest
     endDate: options.endDate,
     targetDate: options.targetDate,
     forceRefresh: options.forceRefresh,
+    host: source.host,
   });
 }
 
-async function ingestSourceForDate(source: CommunitySource, date: Date, forceRefresh: boolean): Promise<IngestStats> {
+export async function ingestSourceForDate(source: CommunitySource, date: Date, forceRefresh: boolean): Promise<IngestStats> {
   return ingestSourceWindow(source, {
     targetDate: new Date(date),
     forceRefresh,
   });
 }
 
-function selectSources(filters: { sourceId?: string | null; calendarId?: string | null; baseUrl?: string | null }): CommunitySource[] {
+export function selectSources(filters: { sourceId?: string | null; calendarId?: string | null; baseUrl?: string | null }): CommunitySource[] {
   if (filters.sourceId) {
     return COMMUNITY_EVENT_SOURCES.filter(source =>
       getAdapterSourceId(source) === filters.sourceId ||
@@ -353,7 +373,7 @@ function selectSources(filters: { sourceId?: string | null; calendarId?: string 
   return COMMUNITY_EVENT_SOURCES;
 }
 
-function getAdapterSourceId(source: CommunitySource): string {
+export function getAdapterSourceId(source: CommunitySource): string {
   if (source.kind === 'google-calendar') {
     return `google-calendar:${source.calendarId}`;
   }

@@ -2,7 +2,6 @@ import type { RawEventPayload } from '../models/event';
 import { GoogleCalendarConnector, type GoogleCalendarRawEvent } from './googleCalendarConnector';
 import { normalizeGoogleCalendarEvent, serializeGoogleCalendarRawEvent } from '../normalizers/googleCalendarNormalizer';
 import type { HostContext, NormalizedSourceEvent, SourceAdapter, SourceFetchOptions } from '../workers/sourceIngest';
-import { buildStableId, createSlug } from '../utils/slug';
 
 interface GoogleCalendarAdapterConfig {
   calendarId: string;
@@ -62,23 +61,7 @@ function deriveHostContext(
 
   const organizer = organizerFromEvent ?? organizerFromPayload;
 
-  const calendarId = sanitizeName(payload.raw.calendarId);
-  const fallbackSource = organizer ?? calendarId ?? sanitizeName(label) ?? payload.sourceId;
-
-  const hostIdSeed = buildStableId(
-    [
-      organizer,
-      calendarId,
-      payload.sourceId,
-    ],
-    createSlug(fallbackSource || 'host'),
-  ) || createSlug(payload.sourceId) || 'host';
-
-  const hostName = organizer ?? calendarId ?? fallbackSource ?? null;
-
   return {
-    hostIdSeed,
-    hostName,
     organizer,
   };
 }

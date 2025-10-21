@@ -3,14 +3,14 @@ import { admin, firestore } from '../firebase/admin';
 import { Timestamp } from 'firebase-admin/firestore';
 import { CanonicalEvent, EventBreadcrumb } from '../models/event';
 import { EventSeries, SeriesHost, SeriesOccurrence } from '../models/eventSeries';
+import type { EventHost } from '../models/eventHost';
 import { RawEventPayload } from '../models/event';
-import { buildStableId, createSlug } from '../utils/slug';
+import { createSlug } from '../utils/slug';
 
 const SERIES_COLLECTION = 'eventSeries';
 
 interface AttachEventOptions {
-  hostId: string;
-  hostName: string | null;
+  host: EventHost;
   organizer?: string | null;
   sourceId: string;
   rawPayload?: RawEventPayload<unknown>;
@@ -94,7 +94,7 @@ export class EventSeriesStore {
 
       const tags = Array.from(new Set([...(data.tags ?? []), ...(event.tags ?? [])]));
       const breadcrumbs = this.mergeBreadcrumbs(data.breadcrumbs ?? [], event.breadcrumbs ?? []);
-      const sourceIds = Array.from(new Set([...(data.host?.sourceIds ?? []), options.sourceId]));
+      const sourceIds = Array.from(new Set([...(data.host?.sourceIds ?? []), ...host.sourceIds, options.sourceId]));
 
       const nextOccurrence = filteredOccurrences.length > 0 ? filteredOccurrences[0] : null;
 
@@ -127,23 +127,24 @@ export class EventSeriesStore {
   }
 
   private buildHost(options: AttachEventOptions): SeriesHost {
-    const baseName = options.organizer?.trim() || options.hostName?.trim() || null;
-    const slugParts = [
-      options.hostId,
-      baseName,
-      options.sourceId,
-    ];
-
-    const fallback = createSlug(options.hostId || options.sourceId);
-    const hostSlug = buildStableId(slugParts, fallback || 'host');
-    const hostId = hostSlug.startsWith('host:') ? hostSlug : `host:${hostSlug}`;
+    const organizer = this.sanitizeName(options.organizer);
+    const baseName = this.sanitizeName(options.host.name) ?? null;
+    const sourceIds = Array.from(new Set([...(options.host.sourceIds ?? []), options.sourceId]));
 
     return {
-      id: hostId,
+      id: options.host.id,
       name: baseName,
-      organizer: options.organizer ?? null,
-      sourceIds: [options.sourceId],
+      organizer,
+      sourceIds,
     };
+  }
+
+  private sanitizeName(value: string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
   }
 
   private buildOccurrence(event: CanonicalEvent): SeriesOccurrence | null {

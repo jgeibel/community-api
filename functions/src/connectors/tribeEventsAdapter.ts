@@ -2,7 +2,6 @@ import type { RawEventPayload } from '../models/event';
 import { TribeEventsConnector, type TribeEventsRawEvent } from './tribeEventsConnector';
 import { normalizeTribeEventsEvent, serializeTribeEventsRawEvent } from '../normalizers/tribeEventsNormalizer';
 import type { HostContext, NormalizedSourceEvent, SourceAdapter, SourceFetchOptions } from '../workers/sourceIngest';
-import { buildStableId, createSlug } from '../utils/slug';
 
 interface TribeEventsAdapterConfig {
   baseUrl: string;
@@ -69,25 +68,9 @@ function deriveHostContext(
 ): HostContext {
   const organizer = sanitizeName(event.organizer) ?? sanitizeName(raw.organizers[0]?.organizer);
   const venueName = sanitizeName(raw.venue?.venue);
-  const fallback = organizer ?? venueName ?? sanitizeName(label) ?? 'Orcas Center';
-
-  const hostIdSeed = buildStableId(
-    [
-      organizer,
-      venueName,
-      label,
-      event.source.sourceId,
-      event.source.sourceEventId,
-    ],
-    createSlug(fallback || 'host'),
-  ) || createSlug(event.source.sourceId) || 'host';
-
-  const hostName = organizer ?? venueName ?? sanitizeName(label) ?? fallback ?? null;
-
+  const labelName = sanitizeName(label);
   return {
-    hostIdSeed,
-    hostName,
-    organizer,
+    organizer: organizer ?? labelName ?? venueName ?? null,
   };
 }
 

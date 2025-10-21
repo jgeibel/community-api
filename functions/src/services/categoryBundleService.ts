@@ -300,9 +300,15 @@ export class CategoryBundleService {
       });
     }
 
-    const allSeries = Array.from(existing.values()).filter(series =>
-      this.isSeriesWithinWindow(series, windowStart, windowEnd)
-    );
+    const allSeries = Array.from(existing.values())
+      .filter(series => this.isSeriesWithinWindow(series, windowStart, windowEnd))
+      .filter(series => {
+        const categoryId = series.category?.id ?? null;
+        if (!categoryId) {
+          return false;
+        }
+        return categoryId === category.id;
+      });
 
     allSeries.sort((a, b) => {
       const aTime = this.getFirstOccurrenceTime(a);

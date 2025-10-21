@@ -1,8 +1,11 @@
 import { ingestGoogleCalendar } from '../workers/googleCalendarIngest';
 import { addUtcDays, startOfDayInTimeZone } from '../utils/timezone';
+import { COMMUNITY_EVENT_SOURCES } from '../index';
+import type { SourceHostConfig } from '../workers/sourceIngest';
 
 const DEFAULT_CALENDAR_ID = '007c8904d97ab1f21a718fab5eab13f5d95d1b0506be7352161bae2aafa8bdd2@group.calendar.google.com';
 const DEFAULT_TIME_ZONE = 'America/Los_Angeles';
+const DEFAULT_HOST_CONFIG = resolveHostConfig(DEFAULT_CALENDAR_ID);
 
 function parseArgs(): {
   calendarId: string;
@@ -63,6 +66,9 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 
 async function run(): Promise<void> {
   const { calendarId, startDate, totalDays, chunkSizeDays } = parseArgs();
+  const hostConfig = calendarId === DEFAULT_CALENDAR_ID
+    ? DEFAULT_HOST_CONFIG
+    : resolveHostConfig(calendarId);
 
   console.log(`Chunked ingest for ${calendarId}`);
   console.log(`  window start: ${startDate.toISOString()}`);
@@ -79,6 +85,7 @@ async function run(): Promise<void> {
       startDate: chunkStart,
       endDate: chunkEnd,
       forceRefresh: true,
+      host: hostConfig,
     });
 
     console.log('  chunk stats:', stats);
@@ -94,3 +101,13 @@ run().then(
     process.exit(1);
   },
 );
+
+function resolveHostConfig(calendarId: string): SourceHostConfig {
+  const source = COMMUNITY_EVENT_SOURCES.find(
+    candidate => candidate.kind === 'google-calendar' && candidate.calendarId === calendarId,
+  );
+  if (!source) {
+    throw new Error(`No host configuration found for calendar ${calendarId}`);
+  }
+  return source.host;
+}

@@ -1,10 +1,57 @@
 import { firestore } from '../firebase/admin';
 
-const DEFAULT_BATCH_SIZE = 300;
+const DEFAULT_BATCH_SIZE = 20;
+
+type CliOptions = {
+  batchSize: number;
+  resetCatalog: boolean;
+};
+
+function parseCliOptions(argv: string[]): CliOptions {
+  let batchSize = DEFAULT_BATCH_SIZE;
+  let resetCatalog = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--catalog') {
+      resetCatalog = true;
+      continue;
+    }
+
+    if (arg === '--batch') {
+      const next = argv[index + 1];
+      if (!next) {
+        throw new Error('--batch flag requires a numeric value');
+      }
+      batchSize = parseBatchSize(next);
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith('--batch=')) {
+      const [, value] = arg.split('=');
+      if (!value) {
+        throw new Error('--batch flag requires a numeric value');
+      }
+      batchSize = parseBatchSize(value);
+      continue;
+    }
+  }
+
+  return { batchSize, resetCatalog };
+}
+
+function parseBatchSize(raw: string): number {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid batch size: ${raw}`);
+  }
+  return Math.min(parsed, 500);
+}
 
 async function deleteCollection(
   collectionPath: string,
-  batchSize = DEFAULT_BATCH_SIZE,
+  batchSize: number,
 ): Promise<number> {
   const collectionRef = firestore.collection(collectionPath);
   let deleted = 0;
@@ -17,7 +64,7 @@ async function deleteCollection(
 
     const batch = firestore.batch();
     for (const doc of snapshot.docs) {
-      await deleteDocumentSubcollections(doc.ref);
+      await deleteDocumentSubcollections(doc.ref, batchSize);
       batch.delete(doc.ref);
     }
     await batch.commit();
@@ -27,16 +74,19 @@ async function deleteCollection(
   return deleted;
 }
 
-async function deleteDocumentSubcollections(docRef: FirebaseFirestore.DocumentReference): Promise<void> {
+async function deleteDocumentSubcollections(
+  docRef: FirebaseFirestore.DocumentReference,
+  batchSize: number,
+): Promise<void> {
   const subcollections = await docRef.listCollections();
   for (const subcollection of subcollections) {
-    await deleteCollectionReference(subcollection);
+    await deleteCollectionReference(subcollection, batchSize);
   }
 }
 
 async function deleteCollectionReference(
   collectionRef: FirebaseFirestore.CollectionReference,
-  batchSize = DEFAULT_BATCH_SIZE,
+  batchSize: number,
 ): Promise<number> {
   let deleted = 0;
   // Iterate in batches to stay within Firestore limits
@@ -48,7 +98,7 @@ async function deleteCollectionReference(
 
     const batch = firestore.batch();
     for (const doc of snapshot.docs) {
-      await deleteDocumentSubcollections(doc.ref);
+      await deleteDocumentSubcollections(doc.ref, batchSize);
       batch.delete(doc.ref);
     }
     await batch.commit();
@@ -60,7 +110,7 @@ async function deleteCollectionReference(
 
 async function deleteCollectionGroup(
   collectionId: string,
-  batchSize = DEFAULT_BATCH_SIZE,
+  batchSize: number,
 ): Promise<number> {
   let deleted = 0;
   while (true) {
@@ -77,21 +127,21 @@ async function deleteCollectionGroup(
   return deleted;
 }
 
-async function resetUserArtifacts(): Promise<void> {
+async function resetUserArtifacts(batchSize: number): Promise<void> {
   console.log('Deleting interactions…');
-  const interactionsDeleted = await deleteCollection('interactions');
+  const interactionsDeleted = await deleteCollection('interactions', batchSize);
   console.log(`  Deleted ${interactionsDeleted} interaction documents`);
 
   console.log('Deleting user profiles cache…');
-  const profilesDeleted = await deleteCollection('profiles');
+  const profilesDeleted = await deleteCollection('profiles', batchSize);
   console.log(`  Deleted ${profilesDeleted} profile documents`);
 
   console.log('Deleting pinned events…');
-  const pinnedDeleted = await deleteCollection('userPinnedEvents');
+  const pinnedDeleted = await deleteCollection('userPinnedEvents', batchSize);
   console.log(`  Deleted ${pinnedDeleted} pinned event documents`);
 
   console.log('Deleting user-level category bundle state…');
-  const bundleDocsDeleted = await deleteCollectionGroup('categoryBundles');
+  const bundleDocsDeleted = await deleteCollectionGroup('categoryBundles', batchSize);
   console.log(`  Deleted ${bundleDocsDeleted} category bundle state documents`);
 
   console.log('Cleaning up empty user documents…');
@@ -106,26 +156,28 @@ async function resetUserArtifacts(): Promise<void> {
   }
 }
 
-async function resetCatalog(): Promise<void> {
-  const catalogs = ['events', 'eventSeries', 'eventCategories'];
+async function resetCatalogCollections(batchSize: number): Promise<void> {
+  const catalogs = ['events', 'eventSeries', 'eventCategories', 'eventHosts'];
   for (const collection of catalogs) {
     console.log(`Deleting ${collection}…`);
-    const deleted = await deleteCollection(collection);
+    const deleted = await deleteCollection(collection, batchSize);
     console.log(`  Deleted ${deleted} documents from ${collection}`);
   }
 }
 
 async function main() {
-  const resetCatalogFlag = process.argv.includes('--catalog');
+  const { batchSize, resetCatalog: shouldResetCatalog } = parseCliOptions(process.argv.slice(2));
 
-  if (resetCatalogFlag) {
+  console.log(`Using batch size ${batchSize}`);
+
+  if (shouldResetCatalog) {
     console.warn('WARNING: Catalog reset will delete event, series, and category documents.');
-    await resetCatalog();
+    await resetCatalogCollections(batchSize);
   } else {
     console.log('Skipping catalog reset (run with --catalog to enable).');
   }
 
-  await resetUserArtifacts();
+  await resetUserArtifacts(batchSize);
   console.log('User data reset complete.');
 }
 

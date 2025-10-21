@@ -139,6 +139,7 @@ const response = await fetch(
   count: number;
   events: FeedItem[];           // Array of content items
   nextPageToken: string | null; // Use for pagination
+  isCaughtUp: boolean;          // true when no additional primary recommendations remain
   window: {
     start: string;              // ISO timestamp
     end: string;                // ISO timestamp
@@ -150,44 +151,115 @@ const response = await fetch(
 #### FeedItem Schema
 
 ```typescript
-interface FeedItem {
+type ContentType =
+  | 'event'
+  | 'event-series'
+  | 'event-category-bundle'
+  | 'flash-offer'
+  | 'poll'
+  | 'request'
+  | 'photo'
+  | 'announcement';
+
+interface FeedItemBase {
   id: string;
   title: string;
-  startTime: string | null;     // ISO timestamp (for events)
-  endTime: string | null;        // ISO timestamp (for events)
-  tags: string[];                // Interest tags (e.g., ["food", "flash-deal", "bargain-hunters"])
-  contentType: ContentType;      // Type of content
-  score: number;                 // Relevance score (0-1, higher = more relevant)
-  source: {
-    sourceId: string;
-    sourceEventId: string;
-    sourceUrl?: string;
-  } | null;
-  classification: {
-    tags: string[];
-    candidates: Array<{
-      tag: string;
-      confidence: number;
-      rationale?: string;
-    }>;
-    metadata?: Record<string, unknown>;
-  } | null;
+  tags: string[];
+  contentType: ContentType;
+  score: number;
+  scoreBreakdown: {
+    topicScore: number;
+    contentTypeScore: number;
+    timeScore: number;
+    styleScore: number;
+    recencyScore: number;
+    popularityScore: number;
+  };
 }
 
-type ContentType =
-  | 'event'          // Scheduled community events
-  | 'flash-offer'    // Time-limited deals
-  | 'poll'           // Community polls
-  | 'request'        // Help requests, offers
-  | 'photo'          // Community photos
-  | 'announcement';  // General announcements
+type FeedItem = EventSeriesFeedItem | CategoryBundleFeedItem;
+
+interface EventSeriesFeedItem extends FeedItemBase {
+  contentType: 'event' | 'event-series';
+  description: string | null;
+  summary: string | null;
+  host: SeriesHost | null;
+  category: SeriesCategory;
+  nextOccurrence: FeedSeriesOccurrence | null;
+  upcomingOccurrences: FeedSeriesOccurrence[];
+  source: unknown;
+}
+
+interface CategoryBundleFeedItem extends FeedItemBase {
+  contentType: 'event-category-bundle';
+  host: SeriesHost | null;
+  category: SeriesCategory;
+  bundle: CategoryBundlePayload;
+}
+
+interface CategoryBundlePayload {
+  totalSeriesCount: number;
+  newSeriesCount: number;
+  seriesIds: string[];
+  newSeriesIds: string[];
+  displaySeries: FeedSeriesData[];
+  allSeries: FeedSeriesData[];
+  isNewCategory: boolean;
+  state: {
+    categoryId: string;
+    version: number;
+  };
+}
+
+interface SeriesHost {
+  id?: string | null;
+  name?: string | null;
+  organizer?: string | null;
+  sourceIds?: string[];
+}
+
+interface SeriesCategory {
+  id: string | null;
+  name: string | null;
+  slug: string | null;
+}
+
+interface FeedSeriesOccurrence {
+  eventId: string;
+  title: string | null;
+  startTime: string;
+  endTime: string | null;
+  location: string | null;
+  tags: string[];
+}
+
+interface FeedSeriesData {
+  id: string;
+  title: string | null;
+  description: string | null;
+  summary: string | null;
+  host: SeriesHost | null;
+  tags: string[];
+  source: unknown;
+  category: SeriesCategory;
+  nextOccurrence: FeedSeriesOccurrence | null;
+  upcomingOccurrences: FeedSeriesOccurrence[];
+}
 ```
 
 #### Pagination Example
 
 ```typescript
+interface FeedResponse {
+  count: number;
+  events: FeedItem[];
+  nextPageToken: string | null;
+  isCaughtUp: boolean;
+}
+
 let allItems: FeedItem[] = [];
 let pageToken: string | null = null;
+let lastPage: FeedResponse | null = null;
 
 do {
   const url = new URL(`${API_BASE}/api/feed`);
@@ -201,11 +273,49 @@ do {
     headers: { 'X-API-Key': API_KEY },
   });
 
-  const data = await response.json();
+  const data = (await response.json()) as FeedResponse;
   allItems = allItems.concat(data.events);
   pageToken = data.nextPageToken;
+  lastPage = data;
 } while (pageToken);
+
+if (allItems.length === 0 || lastPage?.isCaughtUp) {
+  // Show "You're all caught up!" UX or suggest secondary actions
+}
 ```
+
+#### Category Bundles
+
+The feed now collapses recurring host + program-type combinations into a single bundle. These appear with `contentType === 'event-category-bundle'` and contain a `bundle` payload:
+
+- `bundle.displaySeries` – the new or initial series you should render inside the tile.
+- `bundle.allSeries` – the full set of series currently in the bundle (useful for context or tooltips).
+- `bundle.state` – a `{ categoryId, version }` token you **must** echo back when logging interactions so the backend can mark the bundle version as seen. Requests missing this token are rejected.
+- `bundle.isNewCategory` – true when the user has never seen this host/category before; show the full list.
+
+When logging a `viewed` (or any other) interaction for a bundle, include:
+
+```typescript
+await fetch(`${API_BASE}/api/interactions`, {
+  method: 'POST',
+  headers: {
+    'X-API-Key': API_KEY,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    userId,
+    contentId: item.id,           // e.g. "bundle:category:abcd"
+    contentType: 'event-category-bundle',
+    action: 'viewed',
+    context: buildInteractionContext(index),
+    metadata: {
+      bundleState: item.bundle.state, // REQUIRED: must match feed payload exactly
+    },
+  }),
+});
+```
+
+The backend stores the highest version you send, so replays of older versions are ignored. If `metadata.bundleState` is missing or malformed, the API responds with HTTP 400 and the interaction is not recorded.
 
 ---
 
@@ -225,6 +335,10 @@ interface CreateInteractionInput {
   context: InteractionContext;      // Session context
   contentTags?: string[];           // Tags (auto-fetched if omitted)
   metadata?: {                      // Extra attributes (bookmarks use `active`)
+    bundleState?: {                 // REQUIRED for event-category-bundle interactions
+      categoryId: string;
+      version: number;
+    };
     active?: boolean;
     [key: string]: unknown;
   };

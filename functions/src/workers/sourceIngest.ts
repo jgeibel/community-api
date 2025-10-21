@@ -9,7 +9,8 @@ import { TagProposalService, shouldKeepGeneratedSlug } from '../tags/proposalSer
 import { EventCategoryAssignmentService } from '../services/eventCategoryAssignment';
 import type { CanonicalEvent, EventClassification, EventTagCandidate, RawEventPayload } from '../models/event';
 import type { ClassificationCandidate, ClassificationResult } from '../classification/types';
-import { buildStableId, createSlug } from '../utils/slug';
+import { EventHostStore } from '../services/eventHostStore';
+import type { EventHost } from '../models/eventHost';
 
 export interface SourceFetchOptions {
   startDate?: Date;
@@ -17,9 +18,19 @@ export interface SourceFetchOptions {
   targetDate?: Date;
 }
 
+export interface SourceHostConfig {
+  id: string;
+  name: string;
+  slug?: string;
+  type?: string | null;
+  calendarUrl?: string | null;
+  websiteUrl?: string | null;
+  timeZone?: string | null;
+  metadata?: Record<string, unknown> | null;
+  sourceIds?: string[];
+}
+
 export interface HostContext {
-  hostIdSeed: string;
-  hostName: string | null;
   organizer: string | null;
 }
 
@@ -40,6 +51,7 @@ export interface IngestSourceOptions<TRaw> {
   adapter: SourceAdapter<TRaw>;
   fetchOptions?: SourceFetchOptions;
   forceRefresh?: boolean;
+  hostConfig: SourceHostConfig;
 }
 
 export interface IngestStats {
@@ -62,6 +74,7 @@ type PreparedEvent<TRaw> = {
   normalized: CanonicalEvent;
   rawSnapshot: Record<string, unknown>;
   hostContext: HostContext;
+  host: EventHost;
   text: string;
   vector?: number[] | null;
   existingSnapshot?: DocumentSnapshot | null;
@@ -80,6 +93,8 @@ export async function ingestSource<TRaw>(options: IngestSourceOptions<TRaw>): Pr
   const embeddingProvider = new OpenAIEmbeddingProvider();
   const classifier = new EventTagClassifier({ embeddings: embeddingProvider });
   const proposalService = new TagProposalService();
+  const hostStore = new EventHostStore();
+  const resolvedHost = await hostStore.ensureHost(options.hostConfig, adapter.sourceId);
 
   const rawEvents = await adapter.fetchRawEvents(options.fetchOptions);
 
@@ -109,6 +124,7 @@ export async function ingestSource<TRaw>(options: IngestSourceOptions<TRaw>): Pr
         normalized,
         rawSnapshot: normalizedResult.rawSnapshot,
         hostContext: normalizedResult.hostContext ?? deriveDefaultHostContext(normalized, adapter),
+        host: resolvedHost,
         text,
         vector,
         existingSnapshot,
@@ -187,6 +203,7 @@ export async function ingestSource<TRaw>(options: IngestSourceOptions<TRaw>): Pr
       normalized,
       rawSnapshot,
       hostContext,
+      host,
       vector,
       reuseClassification,
       existingClassification,
@@ -243,8 +260,7 @@ export async function ingestSource<TRaw>(options: IngestSourceOptions<TRaw>): Pr
       let categoryAssignmentResult: { categoryId: string; categoryName: string } | null = null;
       try {
         const attachment = await seriesStore.attachEvent(normalized, {
-          hostId: hostContext.hostIdSeed,
-          hostName: hostContext.hostName,
+          host,
           organizer: hostContext.organizer,
           sourceId: payload.sourceId,
           rawPayload: payload,
@@ -256,7 +272,7 @@ export async function ingestSource<TRaw>(options: IngestSourceOptions<TRaw>): Pr
             seriesId: attachment.seriesId,
             host: {
               id: attachment.host.id,
-              name: attachment.host.name ?? hostContext.hostName,
+              name: attachment.host.name ?? host.name,
             },
             force: forceRefresh || attachment.created,
           });
@@ -332,25 +348,8 @@ function sanitizeName(value: string | null | undefined): string | null {
 }
 
 function deriveDefaultHostContext(event: CanonicalEvent, adapter: SourceAdapter<unknown>): HostContext {
-  const organizer = sanitizeName(event.organizer);
-  const label = sanitizeName(adapter.label);
-  const fallbackSource = organizer ?? label ?? sanitizeName(event.source.sourceId) ?? sanitizeName(event.source.sourceUrl ?? null) ?? null;
-
-  const hostIdSeed = buildStableId(
-    [
-      organizer,
-      label,
-      event.source.sourceId,
-      event.source.sourceEventId,
-    ],
-    createSlug(fallbackSource ?? 'host'),
-  ) || createSlug(event.source.sourceId) || 'host';
-
-  const hostName = organizer ?? label ?? fallbackSource ?? null;
-
+  const organizer = sanitizeName(event.organizer) ?? sanitizeName(adapter.label);
   return {
-    hostIdSeed,
-    hostName,
     organizer,
   };
 }

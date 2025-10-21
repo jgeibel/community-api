@@ -1,4 +1,4 @@
-import { ingestSource, type IngestStats, type SourceFetchOptions } from './sourceIngest';
+import { ingestSource, type IngestStats, type SourceFetchOptions, type SourceHostConfig } from './sourceIngest';
 import { TribeEventsAdapter } from '../connectors/tribeEventsAdapter';
 
 export interface TribeEventsIngestConfig {
@@ -8,6 +8,7 @@ export interface TribeEventsIngestConfig {
   endDate?: Date;
   targetDate?: Date;
   forceRefresh?: boolean;
+  host: SourceHostConfig;
 }
 
 export async function ingestTribeEvents(config: TribeEventsIngestConfig): Promise<IngestStats> {
@@ -32,6 +33,7 @@ export async function ingestTribeEvents(config: TribeEventsIngestConfig): Promis
     adapter,
     fetchOptions,
     forceRefresh: config.forceRefresh,
+    hostConfig: config.host,
   });
 }
 

@@ -131,6 +131,7 @@ export class EventCategoryClassifier {
       '- If the class clearly matches one of the existing categories, reuse that category name exactly.',
       '- Otherwise, create a concise new category name (2-4 words) that a user would understand (e.g. "Dance Classes", "Youth Sports").',
       '- Categories should represent broad interest areas, not individual class names.',
+      '- When the programming is instructional (lessons, workshops, ongoing classes), favor names that make that explicit (e.g. use "Dance Classes" instead of a broad performing arts label).',
       '- Prefer reusing categories to avoid duplicates unless there is a meaningful difference in subject matter or audience.',
       '',
       'Respond with JSON of the form:',
