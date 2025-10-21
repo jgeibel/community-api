@@ -1,14 +1,59 @@
 import * as functions from 'firebase-functions/v1';
+import type { Request, Response } from 'express';
 import apiApp from './api/routes';
 import { ingestGoogleCalendar } from './workers/googleCalendarIngest';
-import type { Request, Response } from 'express';
-import type { IngestStats } from './workers/googleCalendarIngest';
+import { ingestTribeEvents } from './workers/tribeEventsIngest';
+import type { IngestStats } from './workers/sourceIngest';
 import { addUtcDays, startOfDayInTimeZone } from './utils/timezone';
 
-const COMMUNITY_GOOGLE_CALENDARS = [
+const DEFAULT_TIME_ZONE = 'America/Los_Angeles';
+
+interface ScheduleConfig {
+  lookBackDays: number;
+  lookAheadDays: number;
+  chunkSizeDays: number;
+}
+
+interface BaseCommunitySource {
+  id: string;
+  label?: string;
+  schedule: ScheduleConfig;
+}
+
+interface GoogleCalendarSource extends BaseCommunitySource {
+  kind: 'google-calendar';
+  calendarId: string;
+}
+
+interface TribeEventsSource extends BaseCommunitySource {
+  kind: 'tribe-events';
+  baseUrl: string;
+}
+
+type CommunitySource = GoogleCalendarSource | TribeEventsSource;
+
+const COMMUNITY_EVENT_SOURCES: CommunitySource[] = [
   {
+    id: 'community-google-calendar',
+    kind: 'google-calendar',
     calendarId: '007c8904d97ab1f21a718fab5eab13f5d95d1b0506be7352161bae2aafa8bdd2@group.calendar.google.com',
     label: 'Community Events Calendar',
+    schedule: {
+      lookBackDays: 1,
+      lookAheadDays: 60,
+      chunkSizeDays: 7,
+    },
+  },
+  {
+    id: 'orcas-center-events',
+    kind: 'tribe-events',
+    baseUrl: 'https://orcascenter.org',
+    label: 'Orcas Center',
+    schedule: {
+      lookBackDays: 14,
+      lookAheadDays: 120,
+      chunkSizeDays: 15,
+    },
   },
 ];
 
@@ -20,16 +65,16 @@ export const syncCommunityEvents = functions
   })
   .pubsub
   .schedule('*/30 * * * *')
-  .timeZone('America/Los_Angeles')
+  .timeZone(DEFAULT_TIME_ZONE)
   .onRun(async () => {
-    for (const calendar of COMMUNITY_GOOGLE_CALENDARS) {
+    for (const source of COMMUNITY_EVENT_SOURCES) {
       try {
-        const stats = await ingestCalendarInChunks(calendar);
+        const stats = await ingestSourceInChunks(source);
         console.log(
-          `Synced ${calendar.calendarId}: fetched=${stats.fetched} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped}`
+          `[${source.id}] Synced ${getAdapterSourceId(source)}: fetched=${stats.fetched} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped}`,
         );
       } catch (error) {
-        console.error(`Failed to sync calendar ${calendar.calendarId}`, error);
+        console.error(`Failed to sync ${source.id}`, error);
       }
     }
 
@@ -43,11 +88,13 @@ export const triggerCommunityEventsSync = functions
     secrets: ['OPENAI_API_KEY', 'GOOGLE_CALENDAR_API_KEY'],
   })
   .https.onRequest(async (req: Request, res: Response) => {
-    const calendarId = (req.query.calendarId as string | undefined) ?? undefined;
+    const sourceIdParam = (req.query.sourceId as string | undefined)?.trim();
+    const calendarIdParam = (req.query.calendarId as string | undefined)?.trim();
+    const baseUrlParam = (req.query.baseUrl as string | undefined)?.trim();
     const startRangeParam = (req.query.start as string | undefined)?.trim();
     const daysParamRaw = (req.query.days as string | undefined)?.trim();
     const chunkParamRaw = (req.query.chunkSize as string | undefined)?.trim();
-    const forceRefreshParam = (req.query.forceRefresh as string | undefined)?.toLowerCase() === 'true';
+    const forceRefresh = (req.query.forceRefresh as string | undefined)?.toLowerCase() === 'true';
 
     let chunkOptions: ChunkOptions | undefined;
 
@@ -83,8 +130,8 @@ export const triggerCommunityEventsSync = functions
         chunkOptions = {
           startDate,
           totalSpanDays,
-          chunkSizeDays: chunkSizeOverride ?? (totalSpanDays ?? CHUNK_DAYS),
-          forceRefresh: forceRefreshParam,
+          chunkSizeDays: chunkSizeOverride,
+          forceRefresh,
         };
       }
     } catch (error) {
@@ -92,30 +139,32 @@ export const triggerCommunityEventsSync = functions
       return;
     }
 
-    const targets = calendarId
-      ? [{ calendarId, label: `Manual trigger (${calendarId})` }]
-      : COMMUNITY_GOOGLE_CALENDARS;
+    const targets = selectSources({ sourceId: sourceIdParam, calendarId: calendarIdParam, baseUrl: baseUrlParam });
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'No matching source found' });
+      return;
+    }
 
-    const optionsWithForce: ChunkOptions | undefined = chunkOptions
-      ? { ...chunkOptions, forceRefresh: forceRefreshParam }
-      : forceRefreshParam
-        ? { forceRefresh: true }
+    const optionsForIngest = chunkOptions
+      ? { ...chunkOptions, forceRefresh }
+      : forceRefresh
+        ? { forceRefresh }
         : undefined;
 
     const results: Array<Record<string, unknown>> = [];
     let hasError = false;
 
-    for (const calendar of targets) {
+    for (const source of targets) {
       try {
-        const stats = await ingestCalendarInChunks(calendar, optionsWithForce);
+        const stats = await ingestSourceInChunks(source, optionsForIngest);
         results.push({
-          calendarId: calendar.calendarId,
+          sourceId: getAdapterSourceId(source),
           stats,
         });
       } catch (error) {
         hasError = true;
         results.push({
-          calendarId: calendar.calendarId,
+          sourceId: getAdapterSourceId(source),
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
@@ -141,6 +190,9 @@ export const triggerCommunityEventsSyncForDay = functions
     }
 
     const forceRefresh = (req.query.forceRefresh as string | undefined)?.toLowerCase() === 'true';
+    const sourceIdParam = (req.query.sourceId as string | undefined)?.trim();
+    const calendarIdParam = (req.query.calendarId as string | undefined)?.trim();
+    const baseUrlParam = (req.query.baseUrl as string | undefined)?.trim();
 
     const parsed = new Date(dateParam);
     if (Number.isNaN(parsed.getTime())) {
@@ -150,30 +202,26 @@ export const triggerCommunityEventsSyncForDay = functions
 
     parsed.setHours(0, 0, 0, 0);
 
-    const calendarId = req.query.calendarId ?? undefined;
-    const targets = calendarId
-      ? [{ calendarId: String(calendarId), label: `Manual single-day trigger (${calendarId})` }]
-      : COMMUNITY_GOOGLE_CALENDARS;
+    const targets = selectSources({ sourceId: sourceIdParam, calendarId: calendarIdParam, baseUrl: baseUrlParam });
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'No matching source found' });
+      return;
+    }
 
-    const results: Array<{ calendarId: string; stats?: IngestStats; error?: string }> = [];
+    const results: Array<{ sourceId: string; stats?: IngestStats; error?: string }> = [];
     let hasError = false;
 
-    for (const calendar of targets) {
+    for (const source of targets) {
       try {
-        const stats = await ingestGoogleCalendar({
-          calendarId: calendar.calendarId,
-          label: calendar.label,
-          targetDate: new Date(parsed),
-          forceRefresh,
-        });
+        const stats = await ingestSourceForDate(source, parsed, forceRefresh);
         results.push({
-          calendarId: calendar.calendarId,
+          sourceId: getAdapterSourceId(source),
           stats,
         });
       } catch (error) {
         hasError = true;
         results.push({
-          calendarId: calendar.calendarId,
+          sourceId: getAdapterSourceId(source),
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
@@ -186,11 +234,6 @@ export const triggerCommunityEventsSyncForDay = functions
     });
   });
 
-const LOOK_BACK_DAYS = 1;
-const LOOK_AHEAD_DAYS = 60;
-const CHUNK_DAYS = 7;
-const DEFAULT_TIME_ZONE = 'America/Los_Angeles';
-
 interface ChunkOptions {
   startDate?: Date;
   totalSpanDays?: number;
@@ -198,22 +241,36 @@ interface ChunkOptions {
   forceRefresh?: boolean;
 }
 
-async function ingestCalendarInChunks(
-  calendar: { calendarId: string; label?: string },
-  options?: ChunkOptions,
-): Promise<IngestStats> {
+interface WindowIngestOptions {
+  startDate?: Date;
+  endDate?: Date;
+  targetDate?: Date;
+  forceRefresh?: boolean;
+}
+
+async function ingestSourceInChunks(source: CommunitySource, options?: ChunkOptions): Promise<IngestStats> {
+  const schedule = source.schedule;
+  const chunkSize = options?.chunkSizeDays ?? schedule.chunkSizeDays;
   const now = new Date();
-  const chunkSize = options?.chunkSizeDays ?? CHUNK_DAYS;
-  if (chunkSize <= 0) {
-    throw new Error('chunkSizeDays must be greater than 0');
-  }
   const windowStart = options?.startDate
     ? new Date(options.startDate)
-    : addUtcDays(startOfDayInTimeZone(now, DEFAULT_TIME_ZONE), -LOOK_BACK_DAYS);
-  const totalSpanDays = options?.totalSpanDays ?? LOOK_BACK_DAYS + LOOK_AHEAD_DAYS + 1;
+    : addUtcDays(startOfDayInTimeZone(now, DEFAULT_TIME_ZONE), -schedule.lookBackDays);
+  const totalSpanDays = options?.totalSpanDays ?? schedule.lookBackDays + schedule.lookAheadDays + 1;
+
+  if (!chunkSize || chunkSize <= 0 || chunkSize >= totalSpanDays) {
+    const stats = await ingestSourceWindow(source, {
+      startDate: windowStart,
+      endDate: addUtcDays(windowStart, totalSpanDays),
+      forceRefresh: options?.forceRefresh,
+    });
+    console.log(
+      `[${source.id}] Window ${windowStart.toISOString()} -> ${addUtcDays(windowStart, totalSpanDays).toISOString()}: fetched=${stats.fetched} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped}`,
+    );
+    return stats;
+  }
 
   const aggregate: IngestStats = {
-    sourceId: `google-calendar:${calendar.calendarId}`,
+    sourceId: getAdapterSourceId(source),
     fetched: 0,
     created: 0,
     updated: 0,
@@ -224,9 +281,7 @@ async function ingestCalendarInChunks(
     const chunkStart = addUtcDays(windowStart, offset);
     const chunkEnd = addUtcDays(windowStart, Math.min(offset + chunkSize, totalSpanDays));
 
-    const stats = await ingestGoogleCalendar({
-      calendarId: calendar.calendarId,
-      label: calendar.label,
+    const stats = await ingestSourceWindow(source, {
       startDate: new Date(chunkStart),
       endDate: new Date(chunkEnd),
       forceRefresh: options?.forceRefresh,
@@ -239,11 +294,72 @@ async function ingestCalendarInChunks(
     aggregate.sourceId = stats.sourceId;
 
     console.log(
-      `Chunk ${chunkStart.toISOString()} -> ${chunkEnd.toISOString()} for ${calendar.calendarId}: fetched=${stats.fetched} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped}`
+      `[${source.id}] Chunk ${chunkStart.toISOString()} -> ${chunkEnd.toISOString()}: fetched=${stats.fetched} created=${stats.created} updated=${stats.updated} skipped=${stats.skipped}`,
     );
   }
 
   return aggregate;
+}
+
+async function ingestSourceWindow(source: CommunitySource, options: WindowIngestOptions): Promise<IngestStats> {
+  if (source.kind === 'google-calendar') {
+    return ingestGoogleCalendar({
+      calendarId: source.calendarId,
+      label: source.label,
+      startDate: options.startDate,
+      endDate: options.endDate,
+      targetDate: options.targetDate,
+      forceRefresh: options.forceRefresh,
+    });
+  }
+
+  return ingestTribeEvents({
+    baseUrl: source.baseUrl,
+    label: source.label,
+    startDate: options.startDate,
+    endDate: options.endDate,
+    targetDate: options.targetDate,
+    forceRefresh: options.forceRefresh,
+  });
+}
+
+async function ingestSourceForDate(source: CommunitySource, date: Date, forceRefresh: boolean): Promise<IngestStats> {
+  return ingestSourceWindow(source, {
+    targetDate: new Date(date),
+    forceRefresh,
+  });
+}
+
+function selectSources(filters: { sourceId?: string | null; calendarId?: string | null; baseUrl?: string | null }): CommunitySource[] {
+  if (filters.sourceId) {
+    return COMMUNITY_EVENT_SOURCES.filter(source =>
+      getAdapterSourceId(source) === filters.sourceId ||
+      source.id === filters.sourceId,
+    );
+  }
+
+  if (filters.calendarId) {
+    return COMMUNITY_EVENT_SOURCES.filter(
+      source => source.kind === 'google-calendar' && source.calendarId === filters.calendarId,
+    );
+  }
+
+  if (filters.baseUrl) {
+    return COMMUNITY_EVENT_SOURCES.filter(
+      source => source.kind === 'tribe-events' && source.baseUrl === filters.baseUrl,
+    );
+  }
+
+  return COMMUNITY_EVENT_SOURCES;
+}
+
+function getAdapterSourceId(source: CommunitySource): string {
+  if (source.kind === 'google-calendar') {
+    return `google-calendar:${source.calendarId}`;
+  }
+
+  const host = new URL(source.baseUrl).hostname;
+  return `tribe-events:${host}`;
 }
 
 export const api = functions

@@ -83,3 +83,30 @@ function buildGoogleEventUrl(calendarId: string, uid: string): string {
   const cid = encodeURIComponent(calendarId);
   return `https://calendar.google.com/calendar/event?eid=${encoded}&cid=${cid}`;
 }
+
+export function serializeGoogleCalendarRawEvent(raw: GoogleCalendarRawEvent): Record<string, unknown> {
+  const plain: Record<string, unknown> = {
+    uid: raw.uid,
+    summary: raw.summary,
+    description: raw.description,
+    start: raw.start ? raw.start.toISOString() : null,
+    end: raw.end ? raw.end.toISOString() : null,
+    isAllDay: raw.isAllDay ?? false,
+    location: raw.location,
+    url: raw.url,
+    organizer: raw.organizer,
+    status: raw.status,
+    updated: raw.updated ?? null,
+    timezone: raw.timezone,
+    calendarId: raw.calendarId,
+    fetchedUrl: raw.fetchedUrl,
+  };
+
+  for (const key of Object.keys(plain)) {
+    if (plain[key] === undefined) {
+      delete plain[key];
+    }
+  }
+
+  return plain;
+}

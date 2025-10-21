@@ -43,6 +43,8 @@ type CategoryGroup = {
 export class CategoryBundleService {
   private readonly categoryStore: EventCategoryStore;
   private readonly stateService: CategoryBundleStateService;
+  private readonly displaySeriesLimit = 6;
+  private readonly enableBundles = true;
 
   constructor(options?: { categoryStore?: EventCategoryStore; stateService?: CategoryBundleStateService }) {
     this.categoryStore = options?.categoryStore ?? new EventCategoryStore();
@@ -73,6 +75,13 @@ export class CategoryBundleService {
     const results: ContentItem[] = [...unbundled];
 
     for (const group of groups) {
+      if (!this.enableBundles) {
+        const ordered = this.orderCandidatesByNextStart(group.items)
+          .slice(0, this.displaySeriesLimit);
+        ordered.forEach(item => results.push(item.contentItem));
+        continue;
+      }
+
       const category = categoryMap.get(group.categoryId);
       if (!category) {
         // Fallback: no category metadata available, surface underlying series instead
@@ -80,12 +89,50 @@ export class CategoryBundleService {
         continue;
       }
 
+      const hostSources = Array.isArray(group.host?.sourceIds) ? group.host?.sourceIds : [];
+      const isExternalHost = hostSources.some(sourceId => sourceId.startsWith('tribe-events:'));
+      if (isExternalHost) {
+        const limitedSeries = this.orderCandidatesByNextStart(group.items)
+          .slice(0, this.displaySeriesLimit)
+          .map(candidate => candidate.contentItem);
+        limitedSeries.forEach(item => results.push(item));
+        continue;
+      }
+
       const state = userState.get(group.categoryId);
       const lastSeenVersion = state && state.lastSeenVersion > 0 ? state.lastSeenVersion : null;
-      const bundleItem = await this.buildBundleItem(group, category, lastSeenVersion, options);
-      if (bundleItem) {
-        results.push(bundleItem);
+      const bundleResult = await this.buildBundleItem(group, category, lastSeenVersion, options);
+      if (!bundleResult) {
+        continue;
       }
+
+      if (bundleResult.type === 'bundle') {
+        results.push(bundleResult.item);
+        continue;
+      }
+
+      const orderedIds = bundleResult.seriesIds;
+      const candidateMap = new Map<string, ContentItem>();
+      group.items.forEach(item => {
+        candidateMap.set(item.series.id, item.contentItem);
+      });
+
+      orderedIds.forEach(id => {
+        const candidate = candidateMap.get(id);
+        if (candidate) {
+          results.push(candidate);
+        }
+      });
+
+      group.items
+        .map(item => item.series.id)
+        .filter(id => !orderedIds.includes(id))
+        .forEach(id => {
+          const candidate = candidateMap.get(id);
+          if (candidate) {
+            results.push(candidate);
+          }
+        });
     }
 
     return results;
@@ -122,12 +169,23 @@ export class CategoryBundleService {
     return Array.from(groups.values());
   }
 
+  private orderCandidatesByNextStart(items: SeriesCandidate[]): SeriesCandidate[] {
+    return [...items].sort((a, b) => {
+      const aTime = this.getFirstOccurrenceTime(a.series);
+      const bTime = this.getFirstOccurrenceTime(b.series);
+      if (aTime === null && bTime === null) return 0;
+      if (aTime === null) return 1;
+      if (bTime === null) return -1;
+      return aTime.getTime() - bTime.getTime();
+    });
+  }
+
   private async buildBundleItem(
     group: CategoryGroup,
     category: EventCategory,
     lastSeenVersion: number | null,
     options?: { windowStart?: Date; windowEnd?: Date },
-  ): Promise<ContentItem | null> {
+  ): Promise<{ type: 'bundle'; item: ContentItem } | { type: 'fallback'; seriesIds: string[] } | null> {
     const fullSeries = await this.loadFullSeries(group, category, options);
     if (fullSeries.length === 0) {
       return null;
@@ -139,19 +197,38 @@ export class CategoryBundleService {
 
     const newSeriesIdsSet = this.computeNewSeriesIds(category, seriesIds, version, lastSeenVersion);
     const isNewCategory = lastSeenVersion === null;
+    const hasNewSeries = newSeriesIdsSet.size > 0;
 
-    if (!isNewCategory && newSeriesIdsSet.size === 0) {
-      // No updates for this user, skip surfacing the bundle
-      return null;
+    let displaySeriesIds: string[];
+    if (isNewCategory) {
+      displaySeriesIds = seriesIds;
+    } else if (hasNewSeries) {
+      displaySeriesIds = Array.from(newSeriesIdsSet);
+    } else {
+      displaySeriesIds = seriesIds.slice(0, this.displaySeriesLimit);
     }
 
-    const displaySeriesIds = isNewCategory ? seriesIds : Array.from(newSeriesIdsSet);
-    const displaySeries = fullSeries.filter(series => displaySeriesIds.includes(series.id));
+    const displaySeries = fullSeries
+      .filter(series => displaySeriesIds.includes(series.id))
+      .slice(0, this.displaySeriesLimit);
 
     if (displaySeries.length === 0) {
-      // Safety fallback – show entire collection if diff computation failed
-      displaySeries.push(...fullSeries);
+      // Safety fallback – show the first few upcoming series.
+      displaySeries.push(...fullSeries.slice(0, this.displaySeriesLimit));
     }
+
+    const orderedDisplayIds = displaySeries.map(series => series.id);
+
+    if (!isNewCategory && !hasNewSeries) {
+      return {
+        type: 'fallback',
+        seriesIds: orderedDisplayIds,
+      };
+    }
+
+    const newSeriesIds = hasNewSeries
+      ? Array.from(newSeriesIdsSet)
+      : orderedDisplayIds;
 
     const contentItem = this.mergeContentItems(group.items);
     const metadata: CategoryBundleMetadata = {
@@ -164,9 +241,9 @@ export class CategoryBundleService {
       },
       host: group.host,
       totalSeriesCount,
-      newSeriesCount: displaySeries.length,
+      newSeriesCount: newSeriesIds.length,
       seriesIds,
-      newSeriesIds: Array.from(newSeriesIdsSet),
+      newSeriesIds,
       displaySeries,
       allSeries: fullSeries,
       version,
@@ -179,13 +256,16 @@ export class CategoryBundleService {
     };
 
     return {
-      ...contentItem,
-      id: `bundle:${category.id}`,
-      title: this.buildBundleTitle(category.name, group.host),
-      contentType: 'event-category-bundle',
-      metadata: {
-        ...contentItem.metadata,
-        bundle: metadata,
+      type: 'bundle',
+      item: {
+        ...contentItem,
+        id: `bundle:${category.id}`,
+        title: this.buildBundleTitle(category.name, group.host),
+        contentType: 'event-category-bundle',
+        metadata: {
+          ...contentItem.metadata,
+          bundle: metadata,
+        },
       },
     };
   }

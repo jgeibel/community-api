@@ -4,7 +4,6 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { CanonicalEvent, EventBreadcrumb } from '../models/event';
 import { EventSeries, SeriesHost, SeriesOccurrence } from '../models/eventSeries';
 import { RawEventPayload } from '../models/event';
-import { GoogleCalendarRawEvent } from '../connectors/googleCalendarConnector';
 import { buildStableId, createSlug } from '../utils/slug';
 
 const SERIES_COLLECTION = 'eventSeries';
@@ -14,7 +13,7 @@ interface AttachEventOptions {
   hostName: string | null;
   organizer?: string | null;
   sourceId: string;
-  rawPayload: RawEventPayload<GoogleCalendarRawEvent>;
+  rawPayload?: RawEventPayload<unknown>;
 }
 
 type StoredSeries = EventSeries & {
@@ -254,7 +253,7 @@ export class EventSeriesStore {
 
   private buildSeriesBreadcrumbs(
     event: CanonicalEvent,
-    payload: RawEventPayload<GoogleCalendarRawEvent>,
+    payload?: RawEventPayload<unknown>,
   ): EventBreadcrumb[] {
     const existing = event.breadcrumbs ?? [];
     if (existing.length > 0) {
@@ -263,12 +262,9 @@ export class EventSeriesStore {
 
     return [{
       type: 'series',
-      sourceId: payload.sourceId,
-      sourceEventId: payload.sourceEventId,
-      fetchedAt: payload.fetchedAt,
-      metadata: {
-        calendarId: payload.raw.calendarId,
-      },
+      sourceId: payload?.sourceId ?? event.source.sourceId,
+      sourceEventId: payload?.sourceEventId ?? event.source.sourceEventId,
+      fetchedAt: payload?.fetchedAt ?? event.lastFetchedAt,
     }];
   }
 

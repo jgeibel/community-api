@@ -1,31 +1,31 @@
 import { ingestSource, type IngestStats, type SourceFetchOptions } from './sourceIngest';
-import { GoogleCalendarAdapter } from '../connectors/googleCalendarAdapter';
+import { TribeEventsAdapter } from '../connectors/tribeEventsAdapter';
 
-export interface GoogleCalendarIngestConfig {
-  calendarId: string;
+export interface TribeEventsIngestConfig {
+  baseUrl: string;
   label?: string;
-  targetDate?: Date;
   startDate?: Date;
   endDate?: Date;
+  targetDate?: Date;
   forceRefresh?: boolean;
 }
 
-export async function ingestGoogleCalendar(config: GoogleCalendarIngestConfig): Promise<IngestStats> {
+export async function ingestTribeEvents(config: TribeEventsIngestConfig): Promise<IngestStats> {
   if ((config.startDate && !config.endDate) || (!config.startDate && config.endDate)) {
     throw new Error('startDate and endDate must be provided together');
   }
 
-  const adapter = new GoogleCalendarAdapter({
-    calendarId: config.calendarId,
+  const adapter = new TribeEventsAdapter({
+    baseUrl: config.baseUrl,
     label: config.label,
   });
 
   const fetchOptions: SourceFetchOptions = {};
-  if (config.startDate && config.endDate) {
+  if (config.targetDate) {
+    fetchOptions.targetDate = config.targetDate;
+  } else if (config.startDate && config.endDate) {
     fetchOptions.startDate = config.startDate;
     fetchOptions.endDateExclusive = config.endDate;
-  } else if (config.targetDate) {
-    fetchOptions.targetDate = config.targetDate;
   }
 
   return ingestSource({
